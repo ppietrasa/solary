@@ -80,7 +80,7 @@ class InverterOnBattery(object):
     """
     TOPIC_SUFFIXES=[
         # R Name of the inverter as configured in web GUI 	
-        '/name',
+        #'/name',
         # R Indicates whether the inverter is reachable - 0 or 1
         '/status/reachable',
         # R Indicates whether the inverter is producing AC power - 0 or 1
@@ -91,16 +91,16 @@ class InverterOnBattery(object):
         # R AC active power in watts - Watt (W)
         '/0/power',
         # R DC power in watts - Watt (W)
-        '/0/powerdc',
+        #'/0/powerdc',
         # R Power factor in percent - %
-        '/0/powerfactor',
+        #'/0/powerfactor',
         # R Temperature of inverter in degree celsius - Degree Celsius (°C)
-        '/0/temperature',
+        #'/0/temperature',
         # R Energy converted to AC per day in watt hours - Watt hours (Wh)
-        '/0/yieldday',
+        #'/0/yieldday',
 
         # R DC current of specific input in ampere - Ampere (A)
-        '/1/current',
+        #'/1/current',
         # R DC power of specific input in watt - Watt (W)
         '/1/power',
         # R DC voltage of specific input in volt - Volt (V)
@@ -308,27 +308,29 @@ def process(client, inverter, pwmeters):
     if inverter.is_reachable:
         #log.info("(inverter.power_limit = %s)" % inverter.power_limit)
         #log.info("(pwmeters.total_power = %s)" % pwmeters.total_power)
-        log.info("Currently feeding: %s W" % inverter.power)
-        log.info("Currently using: %s W" % pwmeters.total_power)
+        log.info("Feeding: %s W (limit %s)" % (inverter.power, inverter.power_limit))
+        log.info("Using: %s W" % pwmeters.total_power)
         proposed_power_limit = min(220, pwmeters.total_power)
         current_power_limit  = inverter.power_limit
         limit_delta = abs(proposed_power_limit - current_power_limit)
-        if (limit_delta > 17): 
+        new_limit = current_power_limit
+        if (limit_delta > 11 or inverter.power_limit > pwmeters.total_power): 
             if (inverter.power_limit < proposed_power_limit):
-                log.info("Bumping power to %s W" %  proposed_power_limit)
+                new_limit = min(proposed_power_limit, new_limit + 25)
+                log.info("Bumping power to %s W" %  new_limit)
             else:
-                log.info("Reducing power to %s W" %  proposed_power_limit)
-            inverter.set_power_limit(client, proposed_power_limit)
+                new_limit = proposed_power_limit # max(proposed_power_limit, new_limit - 25)
+                log.info("Reducing power to %s W" %  new_limit)
+            inverter.set_power_limit(client, new_limit)
             # Wait for the change to take effect (inverter confirms). The inverter
             # and/or DTU need seconds to process this command. Flooding the
             # DTU/inverter renders those non-responsive for a while.
             while True:
                 log.info("waiting for new inverter limit..")
-                limit_delta = abs(proposed_power_limit - inverter.power_limit)
-                if limit_delta < 3:
+                limit_delta = abs(new_limit - inverter.power_limit)
+                if limit_delta < 5:
                     log.info("ok. new inverter limit set (%s)" % inverter.power_limit)
                     break
-                time.sleep(3)
                 client.loop()
     else:
         log.info("(inverter not reachable!)")
@@ -356,16 +358,16 @@ def main():
         client.on_connect = on_connect
         client.on_message = on_message
         client.connect(BROKER, BROKER_PORT, 60)
-        t = Timer(0)
+        t = Timer(10)
         while True:
             # Blocking call that processes network traffic, dispatches callbacks and
             # handles reconnecting.
             client.loop()
            
-            # Process everything in 15s intervals. This is not to flood the
+            # Process everything in 1s intervals. This is not to flood the
             # consol/log too much and also to give DTU/inverter a break. It
-            # stops responding for a while if we flood it with commands too
-            # much.
+            # stops responding for a while if gets flooded with commands
+            # excessively.
             if t.expired():
                 process(client, inverter, pwmeters)
                 t.restart(3)
