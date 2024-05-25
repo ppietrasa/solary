@@ -254,7 +254,7 @@ class PowerMeters(object):
     TOPICS = [
         'tele/office/SENSOR',
         'tele/tv/SENSOR',
-        'tele/fridge/SENSOR'
+        #'tele/fridge/SENSOR'
         ]
 
     def __init__(self):
@@ -277,9 +277,9 @@ class PowerMeters(object):
                 payload_dict = json.loads(payload_json)
                 pwmeter_power = payload_dict.get("ENERGY", {}).get("Power")
                 pwmeter_name = t.split('/')[-2]
-                log.info("power %s: %s W" % (pwmeter_name, pwmeter_power))
+                log.debug("power %s: %s W" % (pwmeter_name, pwmeter_power))
                 total_power += pwmeter_power
-        return max(0, total_power - 75) # max and -70: hack to eliminate office
+        return total_power
 
 inverter = InverterOnBattery('112183843243', 29)
 pwmeters = PowerMeters()
@@ -306,23 +306,32 @@ def on_message(client, userdata, msg):
 
 def process(client, inverter, pwmeters):
     if inverter.is_reachable:
-        log.info("inverter.power_limit = %s" % inverter.power_limit)
-        log.info("pwmeters.total_power = %s" % pwmeters.total_power)
-        new_power_limit = min(220, pwmeters.total_power)
-        if inverter.power_limit - 17 < new_power_limit > inverter.power_limit + 17:
-            log.info("Adjusting inverter power to %s" % new_power_limit)
-            # inverter.set_power_limit(client, new_power_limit)
-            # Wait until the inverter confirms the set limit before
-            # continuing. The inverter and/or DTU need seconds to
-            # process this command. Flooding the DTU/inverter renders
-            # those non-responsive for a while.
-            while (new_power_limit - 1 >= inverter.power_limit <= new_power_limit + 1):
+        #log.info("(inverter.power_limit = %s)" % inverter.power_limit)
+        #log.info("(pwmeters.total_power = %s)" % pwmeters.total_power)
+        log.info("Currently feeding: %s W" % inverter.power)
+        log.info("Currently using: %s W" % pwmeters.total_power)
+        proposed_power_limit = min(220, pwmeters.total_power)
+        current_power_limit  = inverter.power_limit
+        limit_delta = abs(proposed_power_limit - current_power_limit)
+        if (limit_delta > 17): 
+            if (inverter.power_limit < proposed_power_limit):
+                log.info("Bumping power to %s W" %  proposed_power_limit)
+            else:
+                log.info("Reducing power to %s W" %  proposed_power_limit)
+            inverter.set_power_limit(client, proposed_power_limit)
+            # Wait for the change to take effect (inverter confirms). The inverter
+            # and/or DTU need seconds to process this command. Flooding the
+            # DTU/inverter renders those non-responsive for a while.
+            while True:
                 log.info("waiting for new inverter limit..")
+                limit_delta = abs(proposed_power_limit - inverter.power_limit)
+                if limit_delta < 3:
+                    log.info("ok. new inverter limit set (%s)" % inverter.power_limit)
+                    break
                 time.sleep(3)
                 client.loop()
-            log.info("ok. new inverter limit set (%s)" % inverter.power_limit)
     else:
-        print("inverter not reachable!")
+        log.info("(inverter not reachable!)")
 
 
 def main():
@@ -359,7 +368,7 @@ def main():
             # much.
             if t.expired():
                 process(client, inverter, pwmeters)
-                t.restart(15)
+                t.restart(3)
 
     except KeyboardInterrupt:
         print("Interrupted!")
