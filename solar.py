@@ -3,7 +3,7 @@ import paho.mqtt.client as mqtt
 import time, copy, json, argparse, logging, sys
 
 VERSION='0.0.1'
-BROKER='tuxedo.fritz.box'
+BROKER='docstar'
 BROKER_PORT=1883
 
 log  = logging.getLogger(__name__)
@@ -285,6 +285,9 @@ inverter = InverterOnBattery('112183843243', 29)
 pwmeters = PowerMeters()
 client   = mqtt.Client()
 
+def on_pre_connect(*args):
+    """This seems to be needed due to a bug in paho-1-6-1"""
+    log.debug('running on_pre_connect, apparently paho needs this now')
 
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
@@ -357,6 +360,8 @@ def main():
     try:
         client.on_connect = on_connect
         client.on_message = on_message
+        client.on_pre_connect = on_pre_connect
+
         client.connect(BROKER, BROKER_PORT, 60)
         t = Timer(10)
         while True:
