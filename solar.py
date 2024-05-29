@@ -98,7 +98,7 @@ class InverterOnBattery(object):
         ]
 
 
-    def __init__(self, publisher, serial, bat_capacity=1280, base_topic='solar/'):
+    def __init__(self, serial, bat_capacity=1280, base_topic='solar/'):
         """
         Parameters
         ----------
@@ -109,7 +109,9 @@ class InverterOnBattery(object):
         bat_capacity: int
            The battery capacity in Wh.
         """
-        self.publisher = publisher
+        # an MQTT client friend class, which will be set later by the
+        # client itself
+        self.publisher = None
         self.serial = serial
         self.capacity_map = {
             29.2 :    1  * bat_capacity,
@@ -237,9 +239,11 @@ class InverterOnBattery(object):
         return not self.is_on
 
     def power_on(self):
+        assert self.publisher, "Publisher not set!"
         self.publisher.publish(self.t_prefix + '/cmd/power', 1)
 
     def power_off(self):
+        assert self.publisher, "Publisher not set!"
         self.publisher.publish(self.t_prefix + '/cmd/power', 0)
 
     @property
@@ -250,6 +254,7 @@ class InverterOnBattery(object):
         return pwlimit
 
     def _set_power_limit(self, limit):
+        assert self.publisher, "Publisher not set!"
         self.publisher.publish(self.t_prefix + '/cmd/limit_nonpersistent_absolute', str(limit))
 
     @power_limit.setter
@@ -351,48 +356,59 @@ class PowerMeters(object):
                 total_power += pwmeter_power
         return total_power
 
-client   = mqtt.Client()
-inverter = InverterOnBattery(client, '112183843243')
+class MqttClient(mqtt.Client):
+
+    def __init__(self, inverter, pwmeters):
+        super(MqttClient, self).__init__("solar@%s" % BROKER)
+        self.inverter = inverter
+        self.pwmeters = pwmeters
+        # we are a friend of inverter, which sends out commands on behalf of inverter
+        self.inverter.publisher = self
+
+    def on_message(self, client, userdata, msg):
+        assert client == self, "on_connect: unexpected client"
+        log.debug(msg.topic+" "+str(msg.payload))
+        self.pwmeters.update(msg.topic, msg.payload)
+        self.inverter.update(msg.topic, msg.payload)
+        self.process()
+
+    def on_pre_connect(*args):
+        """This seems to be needed due to a bug in paho-1-6-1"""
+        log.debug('running on_pre_connect, apparently paho needs this now')
+
+    # The callback for when the client receives a CONNACK response from the server.
+    def on_connect(self, client, userdata, flags, rc):
+        assert client == self, "on_connect: unexpected client"
+        print("Connected with result code "+str(rc))
+        # Subscribing in on_connect() means that if we lose the connection and
+        # reconnect then subscriptions will be renewed.
+        for topic in self.inverter.topics:
+            client.subscribe(topic)
+        for topic in self.pwmeters.topics:
+            client.subscribe(topic)
+
+    def process(self):
+        # shortcuts to ease reading
+        inverter = self.inverter
+        pwmeters = self.pwmeters
+        if not inverter.is_reachable:
+            log.info("(inverter not reachable!)")
+            return
+        log.info("Feeding: %s W (limit %s)"
+                % (inverter.power, inverter.power_limit))
+        log.info("Using: %s W" % pwmeters.total_power)
+        feed_power = math.floor(min(max(pwmeters.baseload, pwmeters.total_power),
+                inverter.max_power))
+        if inverter.power_limit != feed_power:
+            inverter.power_limit = feed_power
+        if inverter.is_on and inverter.curr_voltage < 24:
+            inverter.power_off()
+        if inverter.is_off and inverter.curr_voltage > 25:
+            inverter.power_on()
+
+inverter = InverterOnBattery('112183843243')
 pwmeters = PowerMeters(baseload = 29)
-
-def on_pre_connect(*args):
-    """This seems to be needed due to a bug in paho-1-6-1"""
-    log.debug('running on_pre_connect, apparently paho needs this now')
-
-# The callback for when the client receives a CONNACK response from the server.
-def on_connect(client, userdata, flags, rc):
-    print("Connected with result code "+str(rc))
-
-    # Subscribing in on_connect() means that if we lose the connection and
-    # reconnect then subscriptions will be renewed.
-    for topic in inverter.topics:
-        client.subscribe(topic)
-    for topic in pwmeters.topics:
-        client.subscribe(topic)
-
-
-# The callback for when a PUBLISH message is received from the server.
-def on_message(client, userdata, msg):
-    log.debug(msg.topic+" "+str(msg.payload))
-    pwmeters.update(msg.topic, msg.payload)
-    inverter.update(msg.topic, msg.payload)
-
-def process(client, inverter, pwmeters):
-    if not inverter.is_reachable:
-        log.info("(inverter not reachable!)")
-        return
-    log.info("Feeding: %s W (limit %s)"
-            % (inverter.power, inverter.power_limit))
-    log.info("Using: %s W" % pwmeters.total_power)
-    feed_power = math.floor(min(max(pwmeters.baseload, pwmeters.total_power),
-            inverter.max_power))
-    if inverter.power_limit != feed_power:
-        inverter.power_limit = feed_power
-    if inverter.is_on and inverter.curr_voltage < 24:
-        inverter.power_off()
-    if inverter.is_off and inverter.curr_voltage > 25:
-        inverter.power_on()
-
+client   = MqttClient(inverter, pwmeters)
 
 def main():
     arg_parser = argparse.ArgumentParser(
@@ -426,16 +442,11 @@ def main():
             logger.setLevel(logging.DEBUG)
 
     try:
-        client.on_connect = on_connect
-        client.on_message = on_message
-        client.on_pre_connect = on_pre_connect
-
         client.connect(BROKER, BROKER_PORT, 60)
         while True:
             # Blocking call that processes network traffic, dispatches
             # callbacks and handles reconnecting.
             client.loop()
-            process(client, inverter, pwmeters)
 
     except KeyboardInterrupt:
         print("Interrupted!")
