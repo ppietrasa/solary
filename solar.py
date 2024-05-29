@@ -364,6 +364,9 @@ class MqttClient(mqtt.Client):
         self.pwmeters = pwmeters
         # we are a friend of inverter, which sends out commands on behalf of inverter
         self.inverter.publisher = self
+        self.lower_pw_bound = pwmeters.total_power - 15
+        self.upper_pw_bound = pwmeters.total_power + 15
+
 
     def on_message(self, client, userdata, msg):
         assert client == self, "on_connect: unexpected client"
@@ -394,17 +397,46 @@ class MqttClient(mqtt.Client):
         if not inverter.is_reachable:
             log.info("(inverter not reachable!)")
             return
-        log.info("Feeding: %s W (limit %s)"
-                % (inverter.power, inverter.power_limit))
-        log.info("Using: %s W" % pwmeters.total_power)
-        feed_power = math.floor(min(max(pwmeters.baseload, pwmeters.total_power),
-                inverter.max_power))
-        if inverter.power_limit != feed_power:
-            inverter.power_limit = feed_power
-        if inverter.is_on and inverter.curr_voltage < 24:
-            inverter.power_off()
-        if inverter.is_off and inverter.curr_voltage > 25:
-            inverter.power_on()
+   
+        with open("solar.stats", "w") as stats_f: 
+            if (    pwmeters.total_power < self.lower_pw_bound
+                 or pwmeters.total_power > self.upper_pw_bound
+               ):
+                print("Consumption: %s (outside of range <%s,%s>)" 
+                    % (pwmeters.total_power, self.lower_pw_bound,
+                       self.upper_pw_bound),
+                    file = stats_f)
+                log.info("Consumption (%s) outside of range: [%s, %s]" %
+                    (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound)
+                    )
+                new_lower_pw_bound = pwmeters.total_power - 15
+                new_upper_pw_bound = pwmeters.total_power + 15
+                log.info("New range: [%s, %s]" % (new_lower_pw_bound, new_upper_pw_bound))
+                self.lower_pw_bound = new_lower_pw_bound
+                self.upper_pw_bound = new_upper_pw_bound
+                log.info("Feeding: %s W (limit %s)"
+                        % (inverter.power, inverter.power_limit))
+                feed_power = math.floor(min(max(pwmeters.baseload,
+                    new_lower_pw_bound), inverter.max_power))
+                inverter.power_limit = feed_power
+            else:
+                print("Consumption: %s (within range <%s,%s>)" 
+                    % (pwmeters.total_power, self.lower_pw_bound,
+                       self.upper_pw_bound),
+                    file = stats_f)
+                log.info("Consumption (%s) within range: [%s, %s]" %
+                        (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound))
+                log.info("Feeding: %s W (limit %s)"
+                    % (inverter.power, inverter.power_limit))
+            print("Feeding:     %s W (%s limit of %s W)" % (
+                inverter.power, 
+                ("below" if inverter.power < inverter.power_limit else "above"),
+                inverter.power_limit
+                ), file = stats_f)
+            if inverter.is_on and inverter.curr_voltage < 24:
+                inverter.power_off()
+            if inverter.is_off and inverter.curr_voltage > 25:
+                inverter.power_on()
 
 inverter = InverterOnBattery('112183843243')
 pwmeters = PowerMeters(baseload = 29)
