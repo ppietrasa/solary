@@ -1,30 +1,12 @@
 #!/usr/bin/env python3
 import paho.mqtt.client as mqtt
-import time, copy, json, argparse, logging, sys
+import time, copy, json, argparse, logging, sys, math
 
 VERSION='0.0.1'
 BROKER='docstar'
 BROKER_PORT=1883
 
 log  = logging.getLogger(__name__)
-
-def arg_parser():
-    # This has to be a module level function for Sphinx to extract the usage
-    # text
-    arg_parser = argparse.ArgumentParser(
-        description = '''
-            Supervise and conrol an inverter running on battery for feeding
-            current into my home power network.
-            ''',
-        )
-    arg_parser.add_argument('--version', action='version',
-            version='%(prog)s ' + VERSION,
-            help='''show program's version number and exit''')
-    arg_parser.add_argument('--verbose', '-v', action='store_true',
-            help='''be a bit more verbose''')
-    arg_parser.add_argument('--debug', action='store_true',
-        help='''be very very verbose''')
-    return arg_parser
 
 class Timer(object):
     """A timer.
@@ -79,7 +61,7 @@ class InverterOnBattery(object):
     Inverter connected to a battery.
     """
     TOPIC_SUFFIXES=[
-        # R Name of the inverter as configured in web GUI 	
+        # R Name of the inverter as configured in web GUI
         #'/name',
         # R Indicates whether the inverter is reachable - 0 or 1
         '/status/reachable',
@@ -95,7 +77,7 @@ class InverterOnBattery(object):
         # R Power factor in percent - %
         #'/0/powerfactor',
         # R Temperature of inverter in degree celsius - Degree Celsius (°C)
-        #'/0/temperature',
+        '/0/temperature',
         # R Energy converted to AC per day in watt hours - Watt hours (Wh)
         #'/0/yieldday',
 
@@ -106,7 +88,7 @@ class InverterOnBattery(object):
         # R DC voltage of specific input in volt - Volt (V)
         '/1/voltage',
 
-		# R Current applied production limit of the inverter - Watt (W)
+        # R Current applied production limit of the inverter - Watt (W)
         '/status/limit_absolute',
 
 #solar/112183843243/1/voltage b'26.3'
@@ -116,19 +98,19 @@ class InverterOnBattery(object):
         ]
 
 
-    def __init__(self, serial, baseload, bat_capacity=1280, base_topic='solar/'):
+    def __init__(self, publisher, serial, bat_capacity=1280, base_topic='solar/'):
         """
         Parameters
         ----------
+        publisher: obj
+           Paho MQTT client
         serial : str
            Serial number of the inverter
-        baseload: int
-           The consumption base load in Watt the inverter should try to maintain/keep.
         bat_capacity: int
            The battery capacity in Wh.
         """
+        self.publisher = publisher
         self.serial = serial
-        self.baseload = baseload
         self.capacity_map = {
             29.2 :    1  * bat_capacity,
             27.2 :    1  * bat_capacity,
@@ -148,6 +130,20 @@ class InverterOnBattery(object):
         self.prev_timestamp = int(time.time())
         self.curr_state = dict()
         self.curr_timestamp = int(time.time())
+        self._setting_pwlimit = False
+        self._requested_pwlimit = 0
+        self._pwlimit_timer = Timer(1)
+        self._voltage_change_timer = Timer(1)
+        self.prev_voltage = 25.6
+
+
+    @property
+    def max_power(self):
+        '''Maimum power the inverter can safly output.'''
+        # The inverter's input should not exceed 11A and the minimal battery
+        # voltage is 22V. It is at the minmal voltage that the inverter would
+        # try to pull max current.
+        return 11 * 22
 
     @property
     def topics(self):
@@ -157,8 +153,11 @@ class InverterOnBattery(object):
     def update(self, topic, payload):
         if topic in self.topics:
             #print("UPDATED INVERTER TOPIC: %s" % topic)
-            self.prev_state = copy.copy(self.curr_state)
+            #self.prev_state = copy.copy(self.curr_state)
             self.curr_state[topic] = payload
+        if self.curr_voltage != self.prev_voltage:
+            self._voltage_change_timer.restart()
+        self.prev_voltage = self.curr_voltage
 
     @property
     def is_reachable(self):
@@ -169,15 +168,14 @@ class InverterOnBattery(object):
         return self.curr_state.get(self.t_prefix + '/status/producing', False) == b'1'
 
     @property
+    def temperature(self):
+        """Temperature of the inverter in °C."""
+        return float(self.curr_state.get(self.t_prefix + '/0/temperature', 23))
+
+    @property
     def curr_voltage(self):
         """Current voltage of the battery."""
         return float(self.curr_state.get(self.t_prefix + '/1/voltage', 26))
-
-    @property
-    def prev_voltage(self):
-        """Previous voltage of the battery."""
-        return float(self.curr_state.get(self.t_prefix + '/1/voltage', 26))
-
 
     @property
     def power(self):
@@ -212,25 +210,88 @@ class InverterOnBattery(object):
     @property
     def prev_capacity(self):
         """Previous *estimated* power in Watt."""
-        return voltage_to_capacity(self.prev_power, self.capacity_map)
+        return voltage_to_capacity(self.prev_voltage, self.capacity_map)
 
+    @property
     def battery_cycling_power(self):
         """The *estimated* charge (positv) or discharge (negative) rate of
         battery in Watt."""
+        # 0.5: a guess if we are below 1s
+        time_delta = max(self._voltage_change_timer, 0.5)
         return (self.curr_capacity - self.prev_capacity) / self.time_delta
 
-    def power_on(self, client):
-        client.publish(self.t_prefix + '/cmd/power', 1)
+    @property
+    def battery_charging(self):
+        return battery_cycling_power > 0
 
-    def power_off(self, client):
-        client.publish(self.t_prefix + '/cmd/power', 0)
+    @property
+    def battery_discharging(self):
+        return battery_cycling_power < 0
+
+    @property
+    def is_on(self):
+        return self.is_producing
+
+    @property
+    def is_off(self):
+        return not self.is_on
+
+    def power_on(self):
+        self.publisher.publish(self.t_prefix + '/cmd/power', 1)
+
+    def power_off(self):
+        self.publisher.publish(self.t_prefix + '/cmd/power', 0)
 
     @property
     def power_limit(self):
-        return float(self.curr_state.get(self.t_prefix + '/status/limit_absolute', 300))
+        pwlimit = math.ceil(float(self.curr_state.get(self.t_prefix +
+            '/status/limit_absolute', 300)))
+        log.debug('(power_limit is %s W)' % pwlimit)
+        return pwlimit
 
-    def set_power_limit(self, client, limit):
-        client.publish(self.t_prefix + '/cmd/limit_nonpersistent_absolute', str(limit))
+    def _set_power_limit(self, limit):
+        self.publisher.publish(self.t_prefix + '/cmd/limit_nonpersistent_absolute', str(limit))
+
+    @power_limit.setter
+    def power_limit(self, limit_new):
+        log.debug('(power_limit = %s W)' % limit_new)
+        if self._setting_pwlimit:
+            limit_now = self.power_limit
+            if limit_now == self._requested_pwlimit:
+                # previous set_power_limit confirmed
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("previousloy set power_limit confirmed (%s W)" %
+                        limit_now)
+                log.debug("setting new power_limit to %s W" % limit_new)
+                self._set_power_limit(limit_new)
+                self._requested_pwlimit = limit_new
+                self._pwlimit_timer.restart()
+            else:
+                log.debug("waiting for %s W power_limit, %ss.." % 
+                    (self._requested_pwlimit, round(self._pwlimit_timer.elapsed())))
+        else:
+            log.debug("requesting %s W power_limit" % limit_new)
+            self._set_power_limit(limit_new)
+            self._setting_pwlimit = True
+            self._requested_pwlimit = limit_new
+            self._pwlimit_timer.restart()
+
+
 
     @staticmethod
     def voltage_to_capacity(voltage, capacity_map):
@@ -257,10 +318,19 @@ class PowerMeters(object):
         #'tele/fridge/SENSOR'
         ]
 
-    def __init__(self):
+    def __init__(self, baseload = 29):
+        """
+        Parameters
+        ----------
+        baseload: int
+            The consumption base load not covered by any power meters. The
+            baseload will be included in the total_power reported by all the
+            power meters.
+        """
         self.topics = PowerMeters.TOPICS
         self.prev_state = dict()
         self.curr_state = dict()
+        self.baseload = baseload
 
     def update(self, topic, payload):
         if topic in self.topics:
@@ -270,20 +340,20 @@ class PowerMeters(object):
     @property
     def total_power(self):
         """Total power measured by all the power meters"""
-        total_power=0
+        total_power=self.baseload
         for t in self.topics:
             payload_json = self.curr_state.get(t, None)
             if payload_json:
                 payload_dict = json.loads(payload_json)
                 pwmeter_power = payload_dict.get("ENERGY", {}).get("Power")
                 pwmeter_name = t.split('/')[-2]
-                log.debug("power %s: %s W" % (pwmeter_name, pwmeter_power))
+                #log.debug("power %s: %s W" % (pwmeter_name, pwmeter_power))
                 total_power += pwmeter_power
         return total_power
 
-inverter = InverterOnBattery('112183843243', 29)
-pwmeters = PowerMeters()
 client   = mqtt.Client()
+inverter = InverterOnBattery(client, '112183843243')
+pwmeters = PowerMeters(baseload = 29)
 
 def on_pre_connect(*args):
     """This seems to be needed due to a bug in paho-1-6-1"""
@@ -308,39 +378,37 @@ def on_message(client, userdata, msg):
     inverter.update(msg.topic, msg.payload)
 
 def process(client, inverter, pwmeters):
-    if inverter.is_reachable:
-        #log.info("(inverter.power_limit = %s)" % inverter.power_limit)
-        #log.info("(pwmeters.total_power = %s)" % pwmeters.total_power)
-        log.info("Feeding: %s W (limit %s)" % (inverter.power, inverter.power_limit))
-        log.info("Using: %s W" % pwmeters.total_power)
-        proposed_power_limit = min(220, pwmeters.total_power)
-        current_power_limit  = inverter.power_limit
-        limit_delta = abs(proposed_power_limit - current_power_limit)
-        new_limit = current_power_limit
-        if (limit_delta > 11 or inverter.power_limit > pwmeters.total_power): 
-            if (inverter.power_limit < proposed_power_limit):
-                new_limit = min(proposed_power_limit, new_limit + 25)
-                log.info("Bumping power to %s W" %  new_limit)
-            else:
-                new_limit = proposed_power_limit # max(proposed_power_limit, new_limit - 25)
-                log.info("Reducing power to %s W" %  new_limit)
-            inverter.set_power_limit(client, new_limit)
-            # Wait for the change to take effect (inverter confirms). The inverter
-            # and/or DTU need seconds to process this command. Flooding the
-            # DTU/inverter renders those non-responsive for a while.
-            while True:
-                log.info("waiting for new inverter limit..")
-                limit_delta = abs(new_limit - inverter.power_limit)
-                if limit_delta < 5:
-                    log.info("ok. new inverter limit set (%s)" % inverter.power_limit)
-                    break
-                client.loop()
-    else:
+    if not inverter.is_reachable:
         log.info("(inverter not reachable!)")
+        return
+    log.info("Feeding: %s W (limit %s)"
+            % (inverter.power, inverter.power_limit))
+    log.info("Using: %s W" % pwmeters.total_power)
+    feed_power = math.floor(min(max(pwmeters.baseload, pwmeters.total_power),
+            inverter.max_power))
+    if inverter.power_limit != feed_power:
+        inverter.power_limit = feed_power
+    if inverter.is_on and inverter.curr_voltage < 24:
+        inverter.power_off()
+    if inverter.is_off and inverter.curr_voltage > 25:
+        inverter.power_on()
 
 
 def main():
-    args = arg_parser().parse_args()
+    arg_parser = argparse.ArgumentParser(
+        description = '''
+            Supervise and conrol an inverter running on battery for feeding
+            current into my home power network.
+            ''',
+        )
+    arg_parser.add_argument('--version', action='version',
+            version='%(prog)s ' + VERSION,
+            help='''show program's version number and exit''')
+    arg_parser.add_argument('--verbose', '-v', action='store_true',
+            help='''be a bit more verbose''')
+    arg_parser.add_argument('--debug', action='store_true',
+        help='''be very very verbose''')
+    args = arg_parser.parse_args()
 
     logger = logging.getLogger()
     logger.addHandler(logging.NullHandler())
@@ -363,19 +431,11 @@ def main():
         client.on_pre_connect = on_pre_connect
 
         client.connect(BROKER, BROKER_PORT, 60)
-        t = Timer(10)
         while True:
-            # Blocking call that processes network traffic, dispatches callbacks and
-            # handles reconnecting.
+            # Blocking call that processes network traffic, dispatches
+            # callbacks and handles reconnecting.
             client.loop()
-           
-            # Process everything in 1s intervals. This is not to flood the
-            # consol/log too much and also to give DTU/inverter a break. It
-            # stops responding for a while if gets flooded with commands
-            # excessively.
-            if t.expired():
-                process(client, inverter, pwmeters)
-                t.restart(3)
+            process(client, inverter, pwmeters)
 
     except KeyboardInterrupt:
         print("Interrupted!")
