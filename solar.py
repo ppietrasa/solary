@@ -135,12 +135,14 @@ class InverterOnBattery(object):
         self.curr_state = dict()
         self.curr_timestamp = int(time.time())
         self._voltage_queue = collections.deque([25.6, 25.6], 2)
-        self._setting_pwlimit = False
-        self._requested_pwlimit = 0
-        self._pwlimit_timer = Timer(1)
         self._voltage_change_timer = Timer(1)
-        self._powering_off = False
-        self._powering_on = False
+
+        # see _send_cmd(), where (and only where) these are employed
+        self._sending_command = False
+        self._prev_cmd = None
+        self._prev_val = None
+        self._prev_verify_f = None
+        self._prev_timer = Timer(120)
 
 
     @property
@@ -255,32 +257,51 @@ class InverterOnBattery(object):
     def is_off(self):
         return not self.is_on
 
-    def power_on(self):
+    def _send_cmd(self, cmd, val, verify_f):
+        """Sends a command to an inverter.
+        Does not allow new commands, unless the previous one is confirmed (the
+        request is fullfilled), or a command expires due to a timeout.
+
+        Parameters
+        ----------
+        cmd: str
+            The command to send.
+        val: obj,
+            The value set by the command
+        verify_f:
+            A predicate to check whether the request has been fullfilled
+            (command considered confirmed).
+        """
         assert self.publisher, "Publisher not set!"
-        self.publisher.publish(self.t_prefix + '/cmd/power', 1)
-        if self._powering_on:
-            if self.is_on:
-                log.debug("previous power_on confirmed")
-                self._powering_on = False
+        if self._sending_command:
+            if self._prev_verify_f():
+                log.debug("previous '%s, %s' confirmed"
+                    % (self._prev_cmd, self._prev_val))
+                self._sending_command = False
+            elif self._prev_timer.expired():
+                log.debug("prvious '%s, %s' expired after %s s"
+                    % (self._prev_cmd, self._prev_val,
+                       self._prev_timer.elapsed()))
+                self._sending_command = False
             else:
-                log.debug("wating for power_on ..")
-        else:
-            log.info("Power on!")
-            self.publisher.publish(self.t_prefix + '/cmd/power', 0)
-            self._powering_on = True
+                log.debug("waiting for '%s, %s', %s s .."
+                    % (self._prev_cmd, self._prev_val,
+                       self._prev_timer.elapsed()))
+        if not self._sending_command:
+            self.publisher.publish(self.t_prefix + cmd, val)
+            self._sending_command = True
+            self._prev_cmd = cmd
+            self._prev_val = val
+            self._prev_verify_f = verify_f
+            self._prev_timer.restart()
+
+    def power_on(self):
+        log.info("power_on")
+        self._send_cmd('/cmd/power', 1, lambda : self.is_on)
 
     def power_off(self):
-        assert self.publisher, "Publisher not set!"
-        if self._powering_off:
-            if self.is_off:
-                log.debug("previous power_off confirmed")
-                self._powering_off = False
-            else:
-                log.debug("wating for power_off ..")
-        else:
-            log.info("Power off!")
-            self.publisher.publish(self.t_prefix + '/cmd/power', 0)
-            self._powering_off = True
+        log.info("power_off")
+        self._send_cmd('/cmd/power', 0, lambda : self.is_on)
 
     @property
     def power_limit(self):
@@ -289,34 +310,11 @@ class InverterOnBattery(object):
         log.debug('(power_limit is %s W)' % pwlimit)
         return pwlimit
 
-    def _set_power_limit(self, limit):
-        assert self.publisher, "Publisher not set!"
-        self.publisher.publish(self.t_prefix + '/cmd/limit_nonpersistent_absolute', str(limit))
-
     @power_limit.setter
     def power_limit(self, limit_new):
-        log.debug('(power_limit = %s W)' % limit_new)
-        if self._setting_pwlimit:
-            limit_now = self.power_limit
-            if limit_now == self._requested_pwlimit:
-                # previous set_power_limit confirmed
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("setting new power_limit to %s W" % limit_new)
-                self._set_power_limit(limit_new)
-                self._requested_pwlimit = limit_new
-                self._pwlimit_timer.restart()
-            else:
-                log.debug("waiting for %s W power_limit, %ss.." %
-                    (self._requested_pwlimit, round(self._pwlimit_timer.elapsed())))
-        else:
-            log.debug("requesting %s W power_limit" % limit_new)
-            self._set_power_limit(limit_new)
-            self._setting_pwlimit = True
-            self._requested_pwlimit = limit_new
-            self._pwlimit_timer.restart()
-
-
+        log.info("power_limit := %s" % limit_new)
+        self._send_cmd('/cmd/limit_nonpersistent_absolute', int(limit_new), 
+            lambda : self.power_limit == limit_new)
 
     @staticmethod
     def voltage_to_capacity(voltage, capacity_map):
