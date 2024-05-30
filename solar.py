@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import paho.mqtt.client as mqtt
-import time, copy, json, argparse, logging, sys, math
+import time, copy, json, argparse, logging, sys, math, collections
 
 VERSION='0.0.1'
 BROKER='docstar'
@@ -75,8 +75,7 @@ class InverterOnBattery(object):
         # R DC power in watts - Watt (W)
         #'/0/powerdc',
         # R Power factor in percent - %
-        #'/0/powerfactor',
-        # R Temperature of inverter in degree celsius - Degree Celsius (°C)
+        #'/0/powerfactor', # R Temperature of inverter in degree celsius - Degree Celsius (°C)
         '/0/temperature',
         # R Energy converted to AC per day in watt hours - Watt hours (Wh)
         #'/0/yieldday',
@@ -132,11 +131,11 @@ class InverterOnBattery(object):
         self.prev_timestamp = int(time.time())
         self.curr_state = dict()
         self.curr_timestamp = int(time.time())
+        self._voltage_queue = collections.deque([25.6, 25.6], 2)
         self._setting_pwlimit = False
         self._requested_pwlimit = 0
         self._pwlimit_timer = Timer(1)
         self._voltage_change_timer = Timer(1)
-        self.prev_voltage = 25.6
 
 
     @property
@@ -157,9 +156,12 @@ class InverterOnBattery(object):
             #print("UPDATED INVERTER TOPIC: %s" % topic)
             #self.prev_state = copy.copy(self.curr_state)
             self.curr_state[topic] = payload
-        if self.curr_voltage != self.prev_voltage:
-            self._voltage_change_timer.restart()
-        self.prev_voltage = self.curr_voltage
+
+        if '/1/voltage' in topic:
+            new_voltage = float(payload)
+            if not math.isclose(new_voltage, self.curr_voltage, abs_tol=0.03):
+                self._voltage_change_timer.restart()
+                self._voltage_queue.append(new_voltage)
 
     @property
     def is_reachable(self):
@@ -175,9 +177,14 @@ class InverterOnBattery(object):
         return float(self.curr_state.get(self.t_prefix + '/0/temperature', 23))
 
     @property
+    def prev_voltage(self):
+        """Current voltage of the battery."""
+        return float(self._voltage_queue[0])
+
+    @property
     def curr_voltage(self):
         """Current voltage of the battery."""
-        return float(self.curr_state.get(self.t_prefix + '/1/voltage', 26))
+        return float(self._voltage_queue[1])
 
     @property
     def power(self):
@@ -212,15 +219,21 @@ class InverterOnBattery(object):
     @property
     def prev_capacity(self):
         """Previous *estimated* power in Watt."""
-        return voltage_to_capacity(self.prev_voltage, self.capacity_map)
+        return InverterOnBattery.voltage_to_capacity(self.prev_voltage, self.capacity_map)
 
     @property
     def battery_cycling_power(self):
         """The *estimated* charge (positv) or discharge (negative) rate of
         battery in Watt."""
         # 0.5: a guess if we are below 1s
-        time_delta = max(self._voltage_change_timer, 0.5)
-        return (self.curr_capacity - self.prev_capacity) / self.time_delta
+        time_delta = self._voltage_change_timer.elapsed() / 3600
+        log.debug("(time_delta = %s)" % time_delta)
+        log.debug("(curr_capacity = %s)" % self.curr_capacity)
+        log.debug("(prev_capacity = %s)" % self.prev_capacity)
+        est_cycling_power = (self.curr_capacity - self.prev_capacity) / time_delta
+        discharge_power   = -self.power
+        log.debug("(cycling_power = %s" % est_cycling_power)
+        return max(discharge_power, est_cycling_power)
 
     @property
     def battery_charging(self):
@@ -240,10 +253,12 @@ class InverterOnBattery(object):
 
     def power_on(self):
         assert self.publisher, "Publisher not set!"
+        log.info("Power on!")
         self.publisher.publish(self.t_prefix + '/cmd/power', 1)
 
     def power_off(self):
         assert self.publisher, "Publisher not set!"
+        log.info("Power off!")
         self.publisher.publish(self.t_prefix + '/cmd/power', 0)
 
     @property
@@ -287,7 +302,7 @@ class InverterOnBattery(object):
                 self._requested_pwlimit = limit_new
                 self._pwlimit_timer.restart()
             else:
-                log.debug("waiting for %s W power_limit, %ss.." % 
+                log.debug("waiting for %s W power_limit, %ss.." %
                     (self._requested_pwlimit, round(self._pwlimit_timer.elapsed())))
         else:
             log.debug("requesting %s W power_limit" % limit_new)
@@ -323,7 +338,7 @@ class PowerMeters(object):
         #'tele/fridge/SENSOR'
         ]
 
-    def __init__(self, baseload = 29):
+    def __init__(self, baseload = 27):
         """
         Parameters
         ----------
@@ -331,6 +346,7 @@ class PowerMeters(object):
             The consumption base load not covered by any power meters. The
             baseload will be included in the total_power reported by all the
             power meters.
+            Default = 27 ; 18.8 (router) + 4.8 (docstar) + 3.6 (kitchen/canteen)
         """
         self.topics = PowerMeters.TOPICS
         self.prev_state = dict()
@@ -390,56 +406,83 @@ class MqttClient(mqtt.Client):
         for topic in self.pwmeters.topics:
             client.subscribe(topic)
 
-    def process(self):
+    def dump_stats(self):
+        """Dump statistics to a file `solar.stats`."""
         # shortcuts to ease reading
         inverter = self.inverter
         pwmeters = self.pwmeters
-        if not inverter.is_reachable:
-            log.info("(inverter not reachable!)")
-            return
-   
-        with open("solar.stats", "w") as stats_f: 
+        with open("solar.stats", "w") as stats_f:
+            print("Status:      %s" 
+                % ("ON" if inverter.is_on else "OFF"),
+                file = stats_f)
+            print("Reachable:   %s" 
+                % ("YES" if inverter.is_reachable else "NO"),
+                file = stats_f)
             if (    pwmeters.total_power < self.lower_pw_bound
                  or pwmeters.total_power > self.upper_pw_bound
                ):
-                print("Consumption: %s (outside of range <%s,%s>)" 
-                    % (pwmeters.total_power, self.lower_pw_bound,
-                       self.upper_pw_bound),
-                    file = stats_f)
-                log.info("Consumption (%s) outside of range: [%s, %s]" %
-                    (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound)
-                    )
-                new_lower_pw_bound = pwmeters.total_power - 15
-                new_upper_pw_bound = pwmeters.total_power + 15
-                log.info("New range: [%s, %s]" % (new_lower_pw_bound, new_upper_pw_bound))
-                self.lower_pw_bound = new_lower_pw_bound
-                self.upper_pw_bound = new_upper_pw_bound
-                log.info("Feeding: %s W (limit %s)"
-                        % (inverter.power, inverter.power_limit))
-                feed_power = math.floor(min(max(pwmeters.baseload,
-                    new_lower_pw_bound), inverter.max_power))
-                inverter.power_limit = feed_power
+                in_range_str = "outside of range"
             else:
-                print("Consumption: %s (within range <%s,%s>)" 
-                    % (pwmeters.total_power, self.lower_pw_bound,
-                       self.upper_pw_bound),
-                    file = stats_f)
-                log.info("Consumption (%s) within range: [%s, %s]" %
-                        (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound))
-                log.info("Feeding: %s W (limit %s)"
-                    % (inverter.power, inverter.power_limit))
+                in_range_str = "within range"
+            print("Consumption: %s W (%s [%s..%s])" % (
+                    pwmeters.total_power,
+                    in_range_str,
+                    self.lower_pw_bound,
+                    self.upper_pw_bound
+                    ), file = stats_f)
+            in_limit_str = ''
+            if (     inverter.power >= inverter.power_limit - 1
+                and  inverter.power <= inverter.power_limit + 1
+               ):
+                in_limit_str = "close to"
+            elif inverter.power > inverter.power_limit:
+                in_limit_str = "above"
+            else:
+                in_limit_str = "below"
             print("Feeding:     %s W (%s limit of %s W)" % (
-                inverter.power, 
-                ("below" if inverter.power < inverter.power_limit else "above"),
-                inverter.power_limit
-                ), file = stats_f)
-            if inverter.is_on and inverter.curr_voltage < 24:
-                inverter.power_off()
-            if inverter.is_off and inverter.curr_voltage > 25:
-                inverter.power_on()
+                    inverter.power, in_limit_str, inverter.power_limit
+                    ), file = stats_f)
+            print("Temperature: %s °C" % inverter.temperature, file = stats_f)
+            print("Voltage:     %s V" % inverter.curr_voltage, file = stats_f)
+            print("Estimated bat. capacity: %.1f Wh" 
+                % inverter.curr_capacity, file = stats_f)
+            print("Estimated cycling power: %.1f W"
+                % inverter.battery_cycling_power, file = stats_f)
+
+
+    def process(self):
+        self.dump_stats()
+        if not inverter.is_reachable:
+            log.info("(inverter not reachable!)")
+            return
+        if (    pwmeters.total_power < self.lower_pw_bound
+             or pwmeters.total_power > self.upper_pw_bound
+           ):
+            log.info("Consumption (%s) outside of range: [%s..%s]" %
+                (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound)
+                )
+            new_lower_pw_bound = pwmeters.total_power - 15
+            new_upper_pw_bound = pwmeters.total_power + 15
+            log.info("New range: [%s, %s]" % (new_lower_pw_bound, new_upper_pw_bound))
+            self.lower_pw_bound = new_lower_pw_bound
+            self.upper_pw_bound = new_upper_pw_bound
+            log.info("Feeding: %s W (limit %s)"
+                    % (inverter.power, inverter.power_limit))
+            feed_power = math.floor(min(max(pwmeters.baseload,
+                new_lower_pw_bound), inverter.max_power))
+            inverter.power_limit = feed_power
+        else:
+            log.info("Consumption (%s) within range: [%s..%s]" %
+                    (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound))
+            log.info("Feeding: %s W (limit %s)"
+                % (inverter.power, inverter.power_limit))
+        if inverter.is_on and inverter.curr_voltage < 25.9:
+            inverter.power_off()
+        if inverter.is_off and inverter.curr_voltage >= 25.9:
+            inverter.power_on()
 
 inverter = InverterOnBattery('112183843243')
-pwmeters = PowerMeters(baseload = 29)
+pwmeters = PowerMeters(baseload = 27)
 client   = MqttClient(inverter, pwmeters)
 
 def main():
