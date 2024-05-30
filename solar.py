@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import paho.mqtt.client as mqtt
-import time, copy, json, argparse, logging, sys, math, collections
+import time, copy, json, argparse, logging, logging.handlers, sys, math, collections
 
 VERSION='0.0.1'
 BROKER='docstar'
@@ -174,7 +174,7 @@ class InverterOnBattery(object):
 
     @property
     def is_producing(self):
-        return self.curr_state.get(self.t_prefix + '/status/producing', False) == b'1'
+        return self.curr_state.get(self.t_prefix + '/status/producing', True) == b'1'
 
     @property
     def temperature(self):
@@ -340,7 +340,7 @@ class PowerMeters(object):
     TOPICS = [
         'tele/office/SENSOR',
         'tele/tv/SENSOR',
-        #'tele/fridge/SENSOR'
+        'tele/fridge/SENSOR'
         ]
 
     def __init__(self, baseload = 27):
@@ -474,32 +474,37 @@ class MqttClient(mqtt.Client):
             log.info("New range: [%s, %s]" % (new_lower_pw_bound, new_upper_pw_bound))
             self.lower_pw_bound = new_lower_pw_bound
             self.upper_pw_bound = new_upper_pw_bound
-            log.info("Feeding: %s W (limit %s)"
-                    % (inv.power, inv.power_limit))
-            feed_power = math.floor(min(max(pwm.baseload,
-                new_lower_pw_bound), inv.max_power))
-            inv.power_limit = feed_power
         else:
             log.info("Consumption (%s) within range: [%s..%s]" %
                     (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
-            log.info("Feeding: %s W (limit %s)"
-                % (inv.power, inv.power_limit))
-            if inv.is_on:
-                if inv.curr_voltage < InverterOnBattery.LOW_VOLTAGE:
-                    log.info("Battery low (%s) , about to power off.." 
-                        % inv.curr_voltage)
-                    inv.power_off()
-                elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
-                    log.info("Temperature (%s) too high, about to power off.."
-                        % inv.temperature)
-                    inv.power_off()
-                else:
-                    pass
-            elif     inv.curr_voltage >= InverterOnBattery.HGH_VOLTAGE \
-                 and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
-                    log.info("Battery full enough (%s) and temperature ok (%s)"
-                        " to power up.." % (inv.curr_voltage, inv.temperature))
-                    inv.power_on()
+        if inv.is_on:
+            if inv.curr_voltage < InverterOnBattery.LOW_VOLTAGE:
+                log.info("Battery low (%s) , about to power off.." 
+                    % inv.curr_voltage)
+                inv.power_off()
+                return
+            elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
+                log.info("Temperature (%s) too high, about to power off.."
+                    % inv.temperature)
+                inv.power_off()
+                return
+            else:
+                pass
+        elif     inv.curr_voltage >= InverterOnBattery.HGH_VOLTAGE \
+             and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
+                log.info("Battery full enough (%s) and temperature ok (%s)"
+                    " to power up.." % (inv.curr_voltage, inv.temperature))
+                inv.power_on()
+                return
+
+        # regular work - adjust the limit to lower bound range
+        # if not already so
+        log.info("Feeding: %s W (limit %s)"
+        % (inv.power, inv.power_limit))
+        feed_power = math.floor(min(max(pwm.baseload,
+            self.lower_pw_bound), inv.max_power))
+        if feed_power != inv.power_limit:
+            inv.power_limit = feed_power
 
 inverter = InverterOnBattery('112183843243')
 pwmeters = PowerMeters(baseload = 27)
@@ -528,11 +533,13 @@ def main():
         # configure the root logger
         logger.setLevel(logging.INFO)
         sh = logging.StreamHandler(sys.stdout)
-        logformatter_spec='%(message)s'
-        if args.debug:
-            logformatter_spec = '[%(levelname)s] ' + logformatter_spec
+        trfh = logging.handlers.TimedRotatingFileHandler('logs/solars.log',
+            when='D', backupCount = 5)
+        logformatter_spec='%(asctime)s [%(levelname)s] %(message)s'
         sh.setFormatter(logging.Formatter(logformatter_spec))
-        logger.addHandler(sh)
+        trfh.setFormatter(logging.Formatter(logformatter_spec))
+        #logger.addHandler(sh)
+        logger.addHandler(trfh)
         if args.debug:
             logger.setLevel(logging.DEBUG)
 
