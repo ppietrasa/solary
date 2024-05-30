@@ -137,11 +137,14 @@ class InverterOnBattery(object):
         self._voltage_queue = collections.deque([25.6, 25.6], 2)
         self._voltage_change_timer = Timer(1)
 
+        #
         # see _send_cmd(), where (and only where) these are employed
+        #
         self._sending_command = False
         self._prev_cmd = None
         self._prev_val = None
         self._prev_verify_f = None
+        # 120: consider the commands issued expired after 2 minutes
         self._prev_timer = Timer(120)
 
 
