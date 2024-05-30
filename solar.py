@@ -96,6 +96,9 @@ class InverterOnBattery(object):
 
         ]
 
+    LOW_VOLTAGE = 24
+    HGH_VOLTAGE = 25.6
+    HGH_TEMPERATURE = 50
 
     def __init__(self, serial, bat_capacity=1280, base_topic='solar/'):
         """
@@ -136,6 +139,8 @@ class InverterOnBattery(object):
         self._requested_pwlimit = 0
         self._pwlimit_timer = Timer(1)
         self._voltage_change_timer = Timer(1)
+        self._powering_off = False
+        self._powering_on = False
 
 
     @property
@@ -231,9 +236,8 @@ class InverterOnBattery(object):
         log.debug("(curr_capacity = %s)" % self.curr_capacity)
         log.debug("(prev_capacity = %s)" % self.prev_capacity)
         est_cycling_power = (self.curr_capacity - self.prev_capacity) / time_delta
-        discharge_power   = -self.power
         log.debug("(cycling_power = %s" % est_cycling_power)
-        return max(discharge_power, est_cycling_power)
+        return est_cycling_power
 
     @property
     def battery_charging(self):
@@ -253,13 +257,30 @@ class InverterOnBattery(object):
 
     def power_on(self):
         assert self.publisher, "Publisher not set!"
-        log.info("Power on!")
         self.publisher.publish(self.t_prefix + '/cmd/power', 1)
+        if self._powering_on:
+            if self.is_on:
+                log.debug("previous power_on confirmed")
+                self._powering_on = False
+            else:
+                log.debug("wating for power_on ..")
+        else:
+            log.info("Power on!")
+            self.publisher.publish(self.t_prefix + '/cmd/power', 0)
+            self._powering_on = True
 
     def power_off(self):
         assert self.publisher, "Publisher not set!"
-        log.info("Power off!")
-        self.publisher.publish(self.t_prefix + '/cmd/power', 0)
+        if self._powering_off:
+            if self.is_off:
+                log.debug("previous power_off confirmed")
+                self._powering_off = False
+            else:
+                log.debug("wating for power_off ..")
+        else:
+            log.info("Power off!")
+            self.publisher.publish(self.t_prefix + '/cmd/power', 0)
+            self._powering_off = True
 
     @property
     def power_limit(self):
@@ -279,22 +300,6 @@ class InverterOnBattery(object):
             limit_now = self.power_limit
             if limit_now == self._requested_pwlimit:
                 # previous set_power_limit confirmed
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
-                log.debug("previousloy set power_limit confirmed (%s W)" %
-                        limit_now)
                 log.debug("previousloy set power_limit confirmed (%s W)" %
                         limit_now)
                 log.debug("setting new power_limit to %s W" % limit_new)
@@ -451,35 +456,50 @@ class MqttClient(mqtt.Client):
 
 
     def process(self):
+        # shortcuts to ease reading
+        inv = self.inverter
+        pwm = self.pwmeters
         self.dump_stats()
-        if not inverter.is_reachable:
-            log.info("(inverter not reachable!)")
+        if not inv.is_reachable:
+            log.info("(inv not reachable!)")
             return
-        if (    pwmeters.total_power < self.lower_pw_bound
-             or pwmeters.total_power > self.upper_pw_bound
+        if (    pwm.total_power < self.lower_pw_bound
+             or pwm.total_power > self.upper_pw_bound
            ):
             log.info("Consumption (%s) outside of range: [%s..%s]" %
-                (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound)
+                (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound)
                 )
-            new_lower_pw_bound = pwmeters.total_power - 15
-            new_upper_pw_bound = pwmeters.total_power + 15
+            new_lower_pw_bound = pwm.total_power - 15
+            new_upper_pw_bound = pwm.total_power + 15
             log.info("New range: [%s, %s]" % (new_lower_pw_bound, new_upper_pw_bound))
             self.lower_pw_bound = new_lower_pw_bound
             self.upper_pw_bound = new_upper_pw_bound
             log.info("Feeding: %s W (limit %s)"
-                    % (inverter.power, inverter.power_limit))
-            feed_power = math.floor(min(max(pwmeters.baseload,
-                new_lower_pw_bound), inverter.max_power))
-            inverter.power_limit = feed_power
+                    % (inv.power, inv.power_limit))
+            feed_power = math.floor(min(max(pwm.baseload,
+                new_lower_pw_bound), inv.max_power))
+            inv.power_limit = feed_power
         else:
             log.info("Consumption (%s) within range: [%s..%s]" %
-                    (pwmeters.total_power, self.lower_pw_bound, self.upper_pw_bound))
+                    (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
             log.info("Feeding: %s W (limit %s)"
-                % (inverter.power, inverter.power_limit))
-        if inverter.is_on and inverter.curr_voltage < 25.9:
-            inverter.power_off()
-        if inverter.is_off and inverter.curr_voltage >= 25.9:
-            inverter.power_on()
+                % (inv.power, inv.power_limit))
+            if inv.is_on:
+                if inv.curr_voltage < InverterOnBattery.LOW_VOLTAGE:
+                    log.info("Battery low (%s) , about to power off.." 
+                        % inv.curr_voltage)
+                    inv.power_off()
+                elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
+                    log.info("Temperature (%s) too high, about to power off.."
+                        % inv.temperature)
+                    inv.power_off()
+                else:
+                    pass
+            elif     inv.curr_voltage >= InverterOnBattery.HGH_VOLTAGE \
+                 and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
+                    log.info("Battery full enough (%s) and temperature ok (%s)"
+                        " to power up.." % (inv.curr_voltage, inv.temperature))
+                    inv.power_on()
 
 inverter = InverterOnBattery('112183843243')
 pwmeters = PowerMeters(baseload = 27)
