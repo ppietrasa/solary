@@ -54,7 +54,7 @@ class Timer(object):
         if elapsed < 0:
             # time has been set back -> we better expire
             elapsed = self.seconds
-        return elapsed
+        return int(round(elapsed))
 
 
 class InverterOnBattery(object):
@@ -62,13 +62,12 @@ class InverterOnBattery(object):
     Inverter connected to a battery.
     """
     TOPIC_SUFFIXES=[
-        # R Name of the inverter as configured in web GUI
-        #'/name',
         # R Indicates whether the inverter is reachable - 0 or 1
         '/status/reachable',
         # R Indicates whether the inverter is producing AC power - 0 or 1
         '/status/producing',
-        # R Unix timestamp of last inverter statistics udpate seconds since JAN 01 1970 (UTC)
+        # R Unix timestamp of last inverter statistics udpate 
+        #   seconds since JAN 01 1970 (UTC)
         #'/status/last_update',
 
         # R AC active power in watts - Watt (W)
@@ -76,13 +75,9 @@ class InverterOnBattery(object):
         # R DC power in watts - Watt (W)
         #'/0/powerdc',
         # R Power factor in percent - %
-        #'/0/powerfactor', # R Temperature of inverter in degree celsius - Degree Celsius (°C)
+        #'/0/powerfactor', # R Temperature of inverter in °C
         '/0/temperature',
-        # R Energy converted to AC per day in watt hours - Watt hours (Wh)
-        #'/0/yieldday',
 
-        # R DC current of specific input in ampere - Ampere (A)
-        #'/1/current',
         # R DC power of specific input in watt - Watt (W)
         '/1/power',
         # R DC voltage of specific input in volt - Volt (V)
@@ -90,11 +85,6 @@ class InverterOnBattery(object):
 
         # R Current applied production limit of the inverter - Watt (W)
         '/status/limit_absolute',
-
-#solar/112183843243/1/voltage b'26.3'
-#solar/112183843243/1/power b'16.9'
-#solar/112183843243/status/limit_absolute b'18.90'
-
         ]
 
     LOW_VOLTAGE = 24
@@ -179,11 +169,13 @@ class InverterOnBattery(object):
 
     @property
     def is_reachable(self):
-        return self.curr_state.get(self.t_prefix + '/status/reachable', False) == b'1'
+        return self.curr_state.get(
+            self.t_prefix + '/status/reachable', False) == b'1'
 
     @property
     def is_producing(self):
-        return self.curr_state.get(self.t_prefix + '/status/producing', True) == b'1'
+        return self.curr_state.get(
+            self.t_prefix + '/status/producing', True) == b'1'
 
     @property
     def temperature(self):
@@ -219,7 +211,8 @@ class InverterOnBattery(object):
         else:
             for i in range(len(sorted_voltages) - 1):
                 voltage1, voltage2 = sorted_voltages[i], sorted_voltages[i + 1]
-                capacity1, capacity2 = capacity_map[voltage1], capacity_map[voltage2]
+                capacity1, capacity2 = capacity_map[voltage1], \
+                    capacity_map[voltage2]
 
                 if voltage1 <= voltage <= voltage2:
                     return InverterOnBattery.interpolate_linear(voltage, voltage1, capacity1, voltage2, capacity2)
@@ -228,12 +221,12 @@ class InverterOnBattery(object):
     @property
     def curr_capacity(self):
         """Current *estimated* power in Watt."""
-        return InverterOnBattery.voltage_to_capacity(self.curr_voltage, self.capacity_map)
+        return self.voltage_to_capacity(self.curr_voltage, self.capacity_map)
 
     @property
     def prev_capacity(self):
         """Previous *estimated* power in Watt."""
-        return InverterOnBattery.voltage_to_capacity(self.prev_voltage, self.capacity_map)
+        return self.voltage_to_capacity(self.prev_voltage, self.capacity_map)
 
     @property
     def battery_cycling_power(self):
@@ -323,23 +316,6 @@ class InverterOnBattery(object):
         self._send_cmd('/cmd/limit_nonpersistent_absolute', int(limit_new),
             lambda : self.power_limit == limit_new)
 
-    @staticmethod
-    def voltage_to_capacity(voltage, capacity_map):
-        sorted_voltages = sorted(capacity_map.keys())
-
-        if voltage <= min(sorted_voltages):
-            return capacity_map[min(sorted_voltages)]
-        elif voltage >= max(sorted_voltages):
-            return capacity_map[max(sorted_voltages)]
-        else:
-            for i in range(len(sorted_voltages) - 1):
-                voltage1, voltage2 = sorted_voltages[i], sorted_voltages[i + 1]
-                capacity1, capacity2 = capacity_map[voltage1], capacity_map[voltage2]
-
-                if voltage1 <= voltage <= voltage2:
-                    return InverterOnBattery.interpolate_linear(voltage, voltage1, capacity1, voltage2, capacity2)
-        assert False, "Unreachable code!"
-
     def stats_as_str(self):
         table = collections.OrderedDict({})
         table['status:'] = 'on' if self.is_on else 'OFF'
@@ -359,7 +335,6 @@ class InverterOnBattery(object):
 
         table_width = max_key_length + max_value_length + 1
 
-        # Initialize the result string with the header
         result = f"{title:^{table_width}}\n"
         result += f"{'-' * table_width}\n"
 
@@ -370,12 +345,6 @@ class InverterOnBattery(object):
                 f" {value_str:>{max_value_length}}\n"
             )
         return result
-
-    def dump_stats(self, stats_f=sys.stdout):
-        if not self.curr_state:
-            return
-        print(self.stats_as_str(), file=stats_f)
-
 
 
 class PowerMeters(object):
@@ -424,7 +393,6 @@ class PowerMeters(object):
 
         table_width = max_name_length + max_value_length + 2
 
-        # Initialize the result string with the header
         result = f"{title:^{table_width}}\n"
         result += f"{'-' * table_width}\n"
 
@@ -435,11 +403,6 @@ class PowerMeters(object):
                 f"{value_str:>{max_value_length}}\n"
             )
         return result
-
-    def dump_stats(self, stats_f=sys.stdout):
-        if not self.curr_state:
-            return
-        print(self.stats_as_str(), file=stats_f)
 
     @property
     def total_power(self):
@@ -573,18 +536,18 @@ class MqttClient(mqtt.Client):
              or pwm.total_power > self.upper_pw_bound
            ):
             self.log("Consumption (%s W) outside of range [%s..%s]" %
-                (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound)
-                )
+                (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
             new_pw_bound_midpoint = int(round(pwm.total_power))
             new_lower_pw_bound = new_pw_bound_midpoint - 15
             new_upper_pw_bound = new_pw_bound_midpoint + 15
-            self.log("New range: [%s, %s]" % (new_lower_pw_bound, new_upper_pw_bound))
+            self.log("New range: [%s, %s]"
+                % (new_lower_pw_bound, new_upper_pw_bound))
             self.lower_pw_bound = new_lower_pw_bound
             self.upper_pw_bound = new_upper_pw_bound
             self.pw_bound_midpoint = new_pw_bound_midpoint
         else:
-            self.log("Consumption (%s W) within range [%s..%s]" %
-                    (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
+            self.log("Consumption (%s W) within range [%s..%s]"
+                % (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
 
         # Adjust the output power (target_power) by setting the power_limit.
         # Theoretically, the inverter output should not exceed the limit, but
