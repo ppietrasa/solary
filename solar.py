@@ -66,7 +66,7 @@ class InverterOnBattery(object):
         '/status/reachable',
         # R Indicates whether the inverter is producing AC power - 0 or 1
         '/status/producing',
-        # R Unix timestamp of last inverter statistics udpate 
+        # R Unix timestamp of last inverter statistics udpate
         #   seconds since JAN 01 1970 (UTC)
         #'/status/last_update',
 
@@ -325,7 +325,7 @@ class InverterOnBattery(object):
         table['temperature:'] = str(self.temperature) + '°C'
         table['voltage:']    = "%.1f V" % self.curr_voltage
         table['est. bat. capacity:']    = "%.1f Wh" % self.curr_capacity
-        max_key_length = max(len(key) 
+        max_key_length = max(len(key)
             for key in table.keys())
         max_value_length = max(len(str(value))
             for value in table.values()) + 2
@@ -365,7 +365,7 @@ class PowerMeters(object):
             Default = 27 ; 18.8 (router) + 4.8 (docstar) + 3.6 (kitchen/canteen)
         """
         self.topics = PowerMeters.TOPICS
-		 # maps sensor name (like 'tv') to power in W
+         # maps sensor name (like 'tv') to power in W
         self.curr_state = dict()
         self.baseload = baseload
 
@@ -383,8 +383,8 @@ class PowerMeters(object):
     def stats_as_str(self):
         curr_state = collections.OrderedDict(self.curr_state)
         curr_state['baseload'] = self.baseload
-        curr_state['total']    = self.total_power 
-        max_name_length = max(len(pwmeter_name) 
+        curr_state['total']    = self.total_power
+        max_name_length = max(len(pwmeter_name)
             for pwmeter_name in curr_state.keys())
         max_value_length = max(len(str(value))
             for value in curr_state.values()) + 2
@@ -460,8 +460,11 @@ class MqttClient(mqtt.Client):
         pwm_stats = self.pwmeters.stats_as_str()
         stats     = self._join_tables_side_by_side(inv_stats, pwm_stats)
         print(file = stats_f)
-        print('consuming: %s W' % self.pwmeters.total_power, file = stats_f)
-        print('feeding  : %s W' % self.inverter.power, file = stats_f)
+        print('consuming: %*s W' % (5, self.pwmeters.total_power),
+             file = stats_f)
+        print('feeding  : %*s W (target %s W)'
+            % (5, self.inverter.power, self.inverter.power_limit)
+            , file = stats_f)
         print(file = stats_f)
         print("last action: %s" % self._lst_msg, file = stats_f)
         print(file = stats_f)
@@ -471,12 +474,12 @@ class MqttClient(mqtt.Client):
     def _join_tables_side_by_side(table1, table2):
         rows1 = table1.split('\n')
         rows2 = table2.split('\n')
-        
+
         max_rows = max(len(rows1), len(rows2))
-        result = '' 
+        result = ''
         for row1, row2 in zip(rows1, rows2):
             result += ('{:<30s}  {}\n'.format(row1, row2))
-        
+
         # Print remaining rows if tables have different sizes
         if len(rows1) > len(rows2):
             for row in rows1[len(rows2):]:
@@ -519,7 +522,7 @@ class MqttClient(mqtt.Client):
         elif     inv.curr_voltage >= InverterOnBattery.HGH_VOLTAGE \
              and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%s V) and temperature ok"
-                    " (%s°C) to power on.." 
+                    " (%s°C) to power on.."
                     % (inv.curr_voltage, inv.temperature))
                 inv.power_on()
 
@@ -527,7 +530,7 @@ class MqttClient(mqtt.Client):
         # adjust the target feeding power unless consumption moves outside of
         # this range, in which case we'll also readjust the range itself.
         #
-        # Rationale: 
+        # Rationale:
         # The consumption varies constantly and we don't want to be flooding
         # inverter with adjustment commands (which anyway are late to the
         # party/ only follow the changes in power). The DTU/inverter do not
@@ -558,7 +561,8 @@ class MqttClient(mqtt.Client):
         # Watts to not exhaust the battery to quick and to increase the chances
         # we don't leak energy in cases where consumption drops suddenly. This
         # gives us some time to adjust.
-        target_power = math.floor(min(max(pwm.baseload, self.pw_bound_midpoint * 0.7), inv.max_power))
+        target_power = math.floor(min(
+            max(pwm.baseload, self.pw_bound_midpoint * 0.7), inv.max_power))
         if target_power != inv.power_limit:
             self.log("Adjusting target power from %s W to %s W"
                 % (inv.power_limit, target_power))
