@@ -302,7 +302,7 @@ class InverterOnBattery(object):
 
     def power_off(self):
         log.info("power_off")
-        self._send_cmd('/cmd/power', 0, lambda : self.is_on)
+        self._send_cmd('/cmd/power', 0, lambda : self.is_off)
 
     @property
     def power_limit(self):
