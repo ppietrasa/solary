@@ -90,8 +90,8 @@ class InverterOnBattery(object):
         '/status/limit_absolute',
         ]
 
-    LOW_VOLTAGE = 24
-    HGH_VOLTAGE = 25.6
+    LOW_VOLTAGE = 24.5
+    HGH_VOLTAGE = 25.9
     HGH_TEMPERATURE = 50
 
     def __init__(self, serial, bat_capacity=1280, base_topic='solar/'):
