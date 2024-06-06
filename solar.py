@@ -419,10 +419,11 @@ class PowerMeters(object):
             total_power += sensor_power
         return total_power
 
-class MqttClient(mqtt.Client):
-
+class PowerOperator(mqtt.Client):
+    """Monitors power meters, battery, inverter and adjusts the inverter based
+    on monitored inputs."""
     def __init__(self, inverter, pwmeters):
-        super(MqttClient, self).__init__("solar@%s" % BROKER)
+        super(PowerOperator, self).__init__("solar@%s" % BROKER)
         self.inverter = inverter
         self.pwmeters = pwmeters
         # we are a friend of inverter, which sends out commands on our behalf
@@ -614,13 +615,13 @@ def main():
     try:
         inverter = InverterOnBattery('112183843243')
         pwmeters = PowerMeters(baseload = 27)
-        client   = MqttClient(inverter, pwmeters)
+        operator = PowerOperator(inverter, pwmeters)
 
-        client.connect(BROKER, BROKER_PORT, 60)
+        operator.connect(BROKER, BROKER_PORT, 60)
         while True:
             # Blocking call that processes network traffic, dispatches
             # callbacks and handles reconnecting.
-            client.loop()
+            operator.loop()
 
     except KeyboardInterrupt:
         print("Interrupted!")
