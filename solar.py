@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import paho.mqtt.client as mqtt
 import time, copy, json, argparse, logging, logging.handlers, sys, math
-import collections, io
+import collections, io, datetime
 
 VERSION='0.0.1'
 BROKER='docstar'
@@ -218,7 +218,9 @@ class InverterOnBattery(object):
                     capacity_map[voltage2]
 
                 if voltage1 <= voltage <= voltage2:
-                    return InverterOnBattery.interpolate_linear(voltage, voltage1, capacity1, voltage2, capacity2)
+                    return InverterOnBattery.interpolate_linear(
+                            voltage, voltage1, capacity1, voltage2, capacity2
+                            )
         assert False, "Unreachable code!"
 
     @property
@@ -240,7 +242,8 @@ class InverterOnBattery(object):
         #log.debug("(time_delta = %s)" % time_delta)
         #log.debug("(curr_capacity = %s)" % self.curr_capacity)
         #log.debug("(prev_capacity = %s)" % self.prev_capacity)
-        est_cycling_power = (self.curr_capacity - self.prev_capacity) / time_delta
+        est_cycling_power = (self.curr_capacity - self.prev_capacity) \
+            / time_delta
         #log.debug("(cycling_power = %s" % est_cycling_power)
         return est_cycling_power
 
@@ -430,7 +433,8 @@ class MqttClient(mqtt.Client):
         self._lst_msg = 'None'
 
     def log(self, msg):
-        self._lst_msg = msg
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self._lst_msg = "%s %s" % (timestamp, msg)
         log.info(msg)
 
     def on_message(self, client, userdata, msg):
@@ -463,13 +467,15 @@ class MqttClient(mqtt.Client):
         pwm_stats = self.pwmeters.stats_as_str()
         stats     = self._join_tables_side_by_side(inv_stats, pwm_stats)
         print(file = stats_f)
-        print('consuming: %*s W' % (5, self.pwmeters.total_power),
-             file = stats_f)
+        print('consuming: %*s W (range [%s..%s])'
+            % (5, self.pwmeters.total_power, self.lower_pw_bound,
+                self.upper_pw_bound)
+            , file = stats_f)
         print('feeding  : %*s W (target %s W)'
             % (5, self.inverter.power, self.inverter.power_limit)
             , file = stats_f)
         print(file = stats_f)
-        print("last action: %s" % self._lst_msg, file = stats_f)
+        print(self._lst_msg, file = stats_f)
         print(file = stats_f)
         print(stats, file = stats_f)
 
@@ -541,18 +547,18 @@ class MqttClient(mqtt.Client):
         if (    pwm.total_power < self.lower_pw_bound
              or pwm.total_power > self.upper_pw_bound
            ):
-            self.log("Consumption (%s W) outside of range [%s..%s]" %
+            log.debug("Consumption (%s W) outside of range [%s..%s]" %
                 (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
             new_pw_bound_midpoint = int(round(pwm.total_power))
-            new_lower_pw_bound = new_pw_bound_midpoint - 15
-            new_upper_pw_bound = new_pw_bound_midpoint + 15
-            self.log("New range: [%s, %s]"
+            new_lower_pw_bound = new_pw_bound_midpoint - 12
+            new_upper_pw_bound = new_pw_bound_midpoint + 12
+            log.debug("New range: [%s..%s]"
                 % (new_lower_pw_bound, new_upper_pw_bound))
             self.lower_pw_bound = new_lower_pw_bound
             self.upper_pw_bound = new_upper_pw_bound
             self.pw_bound_midpoint = new_pw_bound_midpoint
         else:
-            self.log("Consumption (%s W) within range [%s..%s]"
+            log.debug("Consumption (%s W) within range [%s..%s]"
                 % (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
 
         # Adjust the output power (target_power) by setting the power_limit.
@@ -561,9 +567,9 @@ class MqttClient(mqtt.Client):
         #
         # We choose the target_power to follow the midpoint of the range we
         # defined few lines above, but off by a certain constant number of
-        # Watts to not exhaust the battery to quick and to increase the chances
-        # we don't leak energy in cases where consumption drops suddenly. This
-        # gives us some time to adjust.
+        # Watts to not exhaust the battery too quickly and to increase the
+        # chances we don't leak energy in cases where consumption drops
+        # suddenly. This gives us some time to adjust.
         target_power = math.floor(min(
             max(pwm.baseload, self.pw_bound_midpoint * 0.7), inv.max_power))
         if target_power != inv.power_limit:
