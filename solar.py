@@ -27,6 +27,7 @@ class Timer(object):
     def __exit__(self, typ, val, trcbk):
         pass
 
+    @property
     def expired(self):
         """Returns True if timer expired.
 
@@ -36,7 +37,7 @@ class Timer(object):
         occasionally prematurely expire, for instance, if system clock has been
         set back.
         """
-        return self.elapsed() >= self.seconds
+        return self.elapsed >= self.seconds
 
     def restart(self, seconds = None):
         """Restarts the timer."""
@@ -44,10 +45,12 @@ class Timer(object):
         if seconds:
             self.seconds = seconds
 
+    @property
     def remaining(self):
         """Returns time remaining."""
-        return max(0, self.seconds - self.elapsed())
+        return max(0, self.seconds - self.elapsed)
 
+    @property
     def elapsed(self):
         """Returns time elapsed since last restart."""
         elapsed =  time.time() - self.start
@@ -233,7 +236,7 @@ class InverterOnBattery(object):
         """The *estimated* charge (positv) or discharge (negative) rate of
         battery in Watt."""
         # 0.5: a guess if we are below 1s
-        time_delta = self._voltage_change_timer.elapsed() / 3600
+        time_delta = self._voltage_change_timer.elapsed / 3600
         #log.debug("(time_delta = %s)" % time_delta)
         #log.debug("(curr_capacity = %s)" % self.curr_capacity)
         #log.debug("(prev_capacity = %s)" % self.prev_capacity)
@@ -278,15 +281,15 @@ class InverterOnBattery(object):
                 log.debug("previous '%s, %s' confirmed"
                     % (self._prev_cmd, self._prev_val))
                 self._sending_command = False
-            elif self._prev_timer.expired():
+            elif self._prev_timer.expired:
                 log.debug("previous '%s, %s' expired after %s s"
                     % (self._prev_cmd, self._prev_val,
-                       self._prev_timer.elapsed()))
+                       self._prev_timer.elapsed))
                 self._sending_command = False
             else:
                 log.debug("waiting for '%s, %s', %s s .."
                     % (self._prev_cmd, self._prev_val,
-                       self._prev_timer.elapsed()))
+                       self._prev_timer.elapsed))
         if not self._sending_command:
             log.debug("sending '%s, %s'" % (cmd, val))
             self.publisher.publish(self.t_prefix + cmd, val)
