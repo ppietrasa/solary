@@ -325,7 +325,7 @@ class InverterOnBattery(object):
     def stats_as_str(self):
         table = collections.OrderedDict({})
         table['status:'] = 'on' if self.is_on else 'OFF'
-        table['reachable:'] = 'yes' if self.is_on else 'NO'
+        table['reachable:'] = 'yes' if self.is_reachable else 'NO'
         table['feeding:'] = "%.1f W" % self.power
         table['limit:'] = str(self.power_limit) + ' W'
         table['temperature:'] = str(self.temperature) + '°C'
