@@ -536,6 +536,7 @@ class PowerOperator(mqtt.Client):
         if curr_date > self.prev_date:
             self.log("It's a new day (%s), resetting inverter's YieldDay..")
             inv.restart()
+            self.prev_date = curr_date
 
 
         # Protective measures. We protect the battery by switching off the
