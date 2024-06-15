@@ -81,6 +81,9 @@ class InverterOnBattery(object):
         #'/0/powerfactor', # R Temperature of inverter in °C
         '/0/temperature',
 
+        # Energy converted to AC per day in Wh
+        '/0/yieldday',
+
         # R DC power of specific input in watt - Watt (W)
         '/1/power',
         # R DC voltage of specific input in volt - Volt (V)
@@ -128,6 +131,7 @@ class InverterOnBattery(object):
         self.prev_timestamp = int(time.time())
         self.curr_state = dict()
         self.curr_timestamp = int(time.time())
+        self.yieldyesterday = 0
         self._voltage_queue = collections.deque([25.6, 25.6], 2)
         self._voltage_change_timer = Timer(1)
 
@@ -179,6 +183,10 @@ class InverterOnBattery(object):
     def is_producing(self):
         return self.curr_state.get(
             self.t_prefix + '/status/producing', True) == b'1'
+
+    @property
+    def yieldday(self):
+        return int(self.curr_state.get(self.t_prefix + '/0/yieldday', 0))
 
     @property
     def temperature(self):
@@ -310,6 +318,15 @@ class InverterOnBattery(object):
         log.info("power_off")
         self._send_cmd('/cmd/power', 0, lambda : self.is_off)
 
+    def restart(self):
+        log.info("restart")
+        def _restarted():
+            has_restarted = self.yeildday < 1
+            if has_restarted:
+                self.yieldyesterday = self.yieldday
+            return has_restarted
+        self._send_cmd('/cmd/restart', 1, _restarted)
+
     @property
     def power_limit(self):
         pwlimit = math.ceil(float(self.curr_state.get(self.t_prefix +
@@ -329,8 +346,10 @@ class InverterOnBattery(object):
         table['feeding:'] = "%.1f W" % self.power
         table['limit:'] = str(self.power_limit) + ' W'
         table['temperature:'] = str(self.temperature) + '°C'
-        table['voltage:']    = "%.1f V" % self.curr_voltage
+        table['bat. voltage:'] = "%.1f V" % self.curr_voltage
         table['est. bat. capacity:']    = "%.1f Wh" % self.curr_capacity
+        table['yield day:'] = "%s Wh" % self.yieldday
+        table['yield yesterday:'] = "%s Wh" % self.yieldyesterday
         max_key_length = max(len(key)
             for key in table.keys())
         max_value_length = max(len(str(value))
@@ -432,6 +451,7 @@ class PowerOperator(mqtt.Client):
         self.upper_pw_bound = pwmeters.total_power + 15
         self.pw_bound_midpoint = pwmeters.total_power
         self._lst_msg = 'None'
+        self.prev_date = datetime.date.today()
 
     def log(self, msg):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -512,6 +532,11 @@ class PowerOperator(mqtt.Client):
             self.log("(Inverter not reachable!)")
             return
 
+        curr_date = datetime.date.today()
+        if curr_date > self.prev_date:
+            self.log("It's a new day (%s), resetting inverter's YieldDay..")
+            inv.restart()
+
 
         # Protective measures. We protect the battery by switching off the
         # inverter when the battery voltage gets too low. Also, we protect the
@@ -572,7 +597,7 @@ class PowerOperator(mqtt.Client):
         # chances we don't leak energy in cases where consumption drops
         # suddenly. This gives us some time to adjust.
         target_power = math.floor(min(
-            max(pwm.baseload, self.pw_bound_midpoint * 0.7), inv.max_power))
+            max(pwm.baseload, self.pw_bound_midpoint * 0.5), inv.max_power))
         if target_power != inv.power_limit:
             self.log("Adjusting target power from %s W to %s W"
                 % (inv.power_limit, target_power))
