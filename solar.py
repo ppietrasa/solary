@@ -320,10 +320,11 @@ class InverterOnBattery(object):
 
     def restart(self):
         log.info("restart")
+        current_yeildday = self.yieldday
         def _restarted():
             has_restarted = self.yeildday < 1
             if has_restarted:
-                self.yieldyesterday = self.yieldday
+                self.yieldyesterday = current_yeildday
             return has_restarted
         self._send_cmd('/cmd/restart', 1, _restarted)
 
@@ -534,7 +535,8 @@ class PowerOperator(mqtt.Client):
 
         curr_date = datetime.date.today()
         if curr_date > self.prev_date:
-            self.log("It's a new day (%s), resetting inverter's YieldDay..")
+            self.log("It's a new day (%s), resetting inverter's YieldDay.."
+                    % curr_date)
             inv.restart()
             self.prev_date = curr_date
 
