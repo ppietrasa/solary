@@ -322,7 +322,7 @@ class InverterOnBattery(object):
         log.info("restart")
         yieldday_at_restarttime = self.yieldday
         def _restarted():
-            has_restarted = self.yeildday < 1
+            has_restarted = self.yieldday < 1
             if has_restarted:
                 self.yieldyesterday = yieldday_at_restarttime
             return has_restarted
