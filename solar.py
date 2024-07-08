@@ -600,7 +600,7 @@ class PowerOperator(mqtt.Client):
         # chances we don't leak energy in cases where consumption drops
         # suddenly. This gives us some time to adjust.
         target_power = math.floor(min(
-            max(pwm.baseload, self.pw_bound_midpoint * 0.5), inv.max_power))
+            max(pwm.baseload, self.pw_bound_midpoint * 0.8), inv.max_power))
         if target_power != inv.power_limit:
             self.log("Adjusting target power from %s W to %s W"
                 % (inv.power_limit, target_power))
