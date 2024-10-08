@@ -537,7 +537,7 @@ class PowerOperator(mqtt.Client):
             self.prev_date = curr_date
 
         curr_month = datetime.datetime.now().month
-        if 3 <= month < 10:
+        if 3 <= curr_month < 10:
             self.summer_program()
         else:
             self.winter_program()
@@ -632,7 +632,8 @@ class PowerOperator(mqtt.Client):
         # inverter when the battery voltage gets too low. Also, we protect the
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
-            if inv.curr_voltage < 26.3 # ~ 50% capacity
+            # ~ 50% capacity
+            if inv.curr_voltage < 26.3:
                 self.log("Battery low (%s V), about to power off.."
                     % inv.curr_voltage)
                 inv.power_off()
@@ -644,7 +645,8 @@ class PowerOperator(mqtt.Client):
                 return
             else:
                 pass
-        elif     inv.curr_voltage >= 26.5 # ~ 80% capacity
+                 # ~ 80% capacity
+        elif     inv.curr_voltage >= 26.5 \
              and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%s V) and temperature ok"
                     " (%s°C) to power on.."
