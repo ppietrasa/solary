@@ -525,11 +525,7 @@ class PowerOperator(mqtt.Client):
         with open("solar.stats", "w") as stats_f:
             self.dump_stats(stats_f)
 
-        # shortcuts to ease reading
-        inv = self.inverter
-        pwm = self.pwmeters
-
-        if not inv.is_reachable:
+        if not self.inverter.is_reachable:
             self.log("(Inverter not reachable!)")
             return
 
@@ -537,9 +533,22 @@ class PowerOperator(mqtt.Client):
         if curr_date > self.prev_date:
             self.log("It's a new day (%s), resetting inverter's YieldDay.."
                     % curr_date)
-            inv.restart()
+            self.inverter.restart()
             self.prev_date = curr_date
 
+        curr_month = datetime.datetime.now().month
+        if 3 <= month < 10:
+            self.summer_program()
+        else:
+            self.winter_program()
+
+
+    def summer_program(self):
+        """Feed 90% of consumption during sun hours, inverter shutdown on low
+        voltage."""
+        # shortcuts to ease reading
+        inv = self.inverter
+        pwm = self.pwmeters
 
         # Protective measures. We protect the battery by switching off the
         # inverter when the battery voltage gets too low. Also, we protect the
@@ -590,17 +599,101 @@ class PowerOperator(mqtt.Client):
             log.debug("Consumption (%s W) within range [%s..%s]"
                 % (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
 
+
+        now = datetime.datetime.now().time()
+        sun_start = datetime.time(11, 30)
+        sun_end   = datetime.time(17, 30)
+        sun_prct = 0.9 if sun_start <= now <= sun_end else 0.4
         # Adjust the output power (target_power) by setting the power_limit.
         # Theoretically, the inverter output should not exceed the limit, but
         # it often does so. It typically stays +/- few Watt from the limit.
         #
         # We choose the target_power to follow the midpoint of the range we
-        # defined few lines above, but off by a certain constant number of
-        # Watts to not exhaust the battery too quickly and to increase the
-        # chances we don't leak energy in cases where consumption drops
-        # suddenly. This gives us some time to adjust.
+        # defined few lines above reduced by a certain % factor, depending on
+        # the chances of sun. We thus try to reduce changes of leaking energy
+        # to the grid when consumption suddenly drops, to bypass the battery
+        # the bigger the chances of the sun, and not too exahaust the battery
+        # too quickly.
         target_power = math.floor(min(
-            max(pwm.baseload, self.pw_bound_midpoint * 0.8), inv.max_power))
+            max(pwm.baseload, self.pw_bound_midpoint * sun_prct), inv.max_power))
+        if target_power != inv.power_limit:
+            self.log("Adjusting target power from %s W to %s W"
+                % (inv.power_limit, target_power))
+            inv.power_limit = target_power
+
+    def winter_program(self):
+        """Feed 70% of consumption during sun hours, inverter shutdown at 50%
+        of capacity, and startup at around 80%."""
+        # shortcuts to ease reading
+        inv = self.inverter
+        pwm = self.pwmeters
+
+        # Protective measures. We protect the battery by switching off the
+        # inverter when the battery voltage gets too low. Also, we protect the
+        # inverter itself from overheating, by monitoring its temperature.
+        if inv.is_on:
+            if inv.curr_voltage < 26.3 # ~ 50% capacity
+                self.log("Battery low (%s V), about to power off.."
+                    % inv.curr_voltage)
+                inv.power_off()
+                return
+            elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
+                self.log("Temperature (%s°C) too high, about to power off.."
+                    % inv.temperature)
+                inv.power_off()
+                return
+            else:
+                pass
+        elif     inv.curr_voltage >= 26.5 # ~ 80% capacity
+             and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
+                self.log("Battery full enough (%s V) and temperature ok"
+                    " (%s°C) to power on.."
+                    % (inv.curr_voltage, inv.temperature))
+                inv.power_on()
+
+        # Define a range +- 15 W starting from current consumption. We will not
+        # adjust the target feeding power unless consumption moves outside of
+        # this range, in which case we'll also readjust the range itself.
+        #
+        # Rationale:
+        # The consumption varies constantly and we don't want to be flooding
+        # inverter with adjustment commands (which anyway are late to the
+        # party/ only follow the changes in power). The DTU/inverter do not
+        # like excessive number of commands and become unresponsive.
+        if (    pwm.total_power < self.lower_pw_bound
+             or pwm.total_power > self.upper_pw_bound
+           ):
+            log.debug("Consumption (%s W) outside of range [%s..%s]" %
+                (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
+            new_pw_bound_midpoint = int(round(pwm.total_power))
+            new_lower_pw_bound = new_pw_bound_midpoint - 12
+            new_upper_pw_bound = new_pw_bound_midpoint + 12
+            log.debug("New range: [%s..%s]"
+                % (new_lower_pw_bound, new_upper_pw_bound))
+            self.lower_pw_bound = new_lower_pw_bound
+            self.upper_pw_bound = new_upper_pw_bound
+            self.pw_bound_midpoint = new_pw_bound_midpoint
+        else:
+            log.debug("Consumption (%s W) within range [%s..%s]"
+                % (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
+
+
+        now = datetime.datetime.now().time()
+        sun_start = datetime.time(11, 30)
+        sun_end   = datetime.time(16, 30)
+        sun_prct = 0.7 if sun_start <= now <= sun_end else 0.4
+        # Adjust the output power (target_power) by setting the power_limit.
+        # Theoretically, the inverter output should not exceed the limit, but
+        # it often does so. It typically stays +/- few Watt from the limit.
+        #
+        # We choose the target_power to follow the midpoint of the range we
+        # defined few lines above reduced by a certain % factor, depending on
+        # the chances of sun. We thus try to reduce changes of leaking energy
+        # to the grid when consumption suddenly drops, to bypass the battery
+        # the bigger the chances of the sun, and not too exahaust the battery
+        # too quickly.
+        target_power = math.floor(min(
+            max(pwm.baseload, self.pw_bound_midpoint * sun_prct), inv.max_power))
         if target_power != inv.power_limit:
             self.log("Adjusting target power from %s W to %s W"
                 % (inv.power_limit, target_power))
