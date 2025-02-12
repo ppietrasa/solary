@@ -147,7 +147,7 @@ class InverterOnBattery(object):
 
     @property
     def max_power(self):
-        '''Maimum power the inverter can safly output.'''
+        '''Maximum power the inverter can safely output.'''
         # The inverter's input should not exceed 11A and the minimal battery
         # voltage is 22V. It is at the minimal voltage that the inverter would
         # try to pull max current.
@@ -268,7 +268,7 @@ class InverterOnBattery(object):
     def _send_cmd(self, cmd, val, verify_f):
         """Sends a command to the inverter.
         Does not allow new commands, unless the previous one is confirmed (the
-        request is fullfilled), or a command expires due to a timeout.
+        request is fulfilled), or a command expires due to a timeout.
 
         Parameters
         ----------
@@ -277,7 +277,7 @@ class InverterOnBattery(object):
         val: obj,
             The value set by the command
         verify_f:
-            A predicate to check whether the request has been fullfilled
+            A predicate to check whether the request has been fulfilled
             (command considered confirmed).
         """
         assert self.publisher, "Publisher not set!"
@@ -627,7 +627,7 @@ class PowerOperator(mqtt.Client):
         # inverter when the battery voltage gets too low. Also, we protect the
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
-            # ~ 18.5% capacity (likely more because discharing)
+            # ~ 18.5% capacity (likely more because discharging)
             if inv.sma_voltage < 25.7:
                 self.log("Battery low (%s V), about to power off.."
                     % inv.sma_voltage)
@@ -687,7 +687,7 @@ class PowerOperator(mqtt.Client):
         # defined few lines above reduced by a certain % factor, depending on
         # the chances of sun. We thus try to reduce changes of leaking energy
         # to the grid when consumption suddenly drops, to bypass the battery
-        # the bigger the chances of the sun, and not too exahaust the battery
+        # the bigger the chances of the sun, and not too exhaust the battery
         # too quickly.
         target_power = math.floor(min(
             max(pwm.baseload, self.pw_bound_midpoint * sun_prct), inv.max_power))
@@ -700,7 +700,7 @@ class PowerOperator(mqtt.Client):
 def main():
     arg_parser = argparse.ArgumentParser(
         description = '''
-            Supervise and conrol an inverter running on battery for feeding
+            Supervise and control an inverter running on battery for feeding
             current into my home power network.
             ''',
         )
