@@ -132,8 +132,7 @@ class InverterOnBattery(object):
         self.curr_state = dict()
         self.curr_timestamp = int(time.time())
         self.yieldyesterday = 0
-        self._voltage_queue = collections.deque([25.6, 25.6], 2)
-        self._voltage_change_timer = Timer(1)
+        self._voltage_queue = collections.deque([25.6, 25.6], 9)
 
         #
         # see _send_cmd(), where (and only where) these are employed
@@ -150,7 +149,7 @@ class InverterOnBattery(object):
     def max_power(self):
         '''Maimum power the inverter can safly output.'''
         # The inverter's input should not exceed 11A and the minimal battery
-        # voltage is 22V. It is at the minmal voltage that the inverter would
+        # voltage is 22V. It is at the minimal voltage that the inverter would
         # try to pull max current.
         return 11 * 22
 
@@ -169,9 +168,7 @@ class InverterOnBattery(object):
 
         if '/1/voltage' in topic:
             new_voltage = float(payload)
-            if not math.isclose(new_voltage, self.curr_voltage, abs_tol=0.03):
-                self._voltage_change_timer.restart()
-                self._voltage_queue.append(new_voltage)
+            self._voltage_queue.append(new_voltage)
         return prev_state != self.curr_state
 
     @property
@@ -195,13 +192,18 @@ class InverterOnBattery(object):
 
     @property
     def prev_voltage(self):
-        """Current voltage of the battery."""
-        return float(self._voltage_queue[0])
+        """Previous voltage of the battery."""
+        return float(self._voltage_queue[-2])
 
     @property
     def curr_voltage(self):
         """Current voltage of the battery."""
-        return float(self._voltage_queue[1])
+        return float(self._voltage_queue[-1])
+
+    @property
+    def sma_voltage(self):
+        """Average voltage over the last few observations (up to 9 currently)"""
+        return float(sum(self._voltage_queue) / len(self._voltage_queue))
 
     @property
     def power(self):
@@ -245,15 +247,7 @@ class InverterOnBattery(object):
     def battery_cycling_power(self):
         """The *estimated* charge (positv) or discharge (negative) rate of
         battery in Watt."""
-        # 0.5: a guess if we are below 1s
-        time_delta = self._voltage_change_timer.elapsed / 3600
-        #log.debug("(time_delta = %s)" % time_delta)
-        #log.debug("(curr_capacity = %s)" % self.curr_capacity)
-        #log.debug("(prev_capacity = %s)" % self.prev_capacity)
-        est_cycling_power = (self.curr_capacity - self.prev_capacity) \
-            / time_delta
-        #log.debug("(cycling_power = %s" % est_cycling_power)
-        return est_cycling_power
+        return 0 # TODO
 
     @property
     def battery_charging(self):
@@ -348,6 +342,7 @@ class InverterOnBattery(object):
         table['limit:'] = str(self.power_limit) + ' W'
         table['temperature:'] = str(self.temperature) + '°C'
         table['bat. voltage:'] = "%.1f V" % self.curr_voltage
+        table['bat. sma_voltage:'] = "%.1f V" % self.sma_voltage
         table['est. bat. capacity:']    = "%.1f Wh" % self.curr_capacity
         table['yield day:'] = "%s Wh" % self.yieldday
         table['yield yesterday:'] = "%s Wh" % self.yieldyesterday
@@ -554,9 +549,9 @@ class PowerOperator(mqtt.Client):
         # inverter when the battery voltage gets too low. Also, we protect the
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
-            if inv.curr_voltage < InverterOnBattery.LOW_VOLTAGE:
+            if inv.sma_voltage < InverterOnBattery.LOW_VOLTAGE:
                 self.log("Battery low (%s V), about to power off.."
-                    % inv.curr_voltage)
+                    % inv.sma_voltage)
                 inv.power_off()
                 return
             elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
@@ -566,11 +561,11 @@ class PowerOperator(mqtt.Client):
                 return
             else:
                 pass
-        elif     inv.curr_voltage >= InverterOnBattery.HGH_VOLTAGE \
-             and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
+        elif     inv.sma_voltage >= InverterOnBattery.HGH_VOLTAGE \
+             and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%s V) and temperature ok"
                     " (%s°C) to power on.."
-                    % (inv.curr_voltage, inv.temperature))
+                    % (inv.sma_voltage, inv.temperature))
                 inv.power_on()
 
         # Define a range +- 15 W starting from current consumption. We will not
@@ -633,9 +628,9 @@ class PowerOperator(mqtt.Client):
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
             # ~ 18.5% capacity (likely more because discharing)
-            if inv.curr_voltage < 25.7:
+            if inv.sma_voltage < 25.7:
                 self.log("Battery low (%s V), about to power off.."
-                    % inv.curr_voltage)
+                    % inv.sma_voltage)
                 inv.power_off()
                 return
             elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
@@ -646,11 +641,11 @@ class PowerOperator(mqtt.Client):
             else:
                 pass
                  # ~ 95% capacity (likely much less because charging)
-        elif     inv.curr_voltage > 26.7 \
+        elif     inv.sma_voltage > 26.7 \
              and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%s V) and temperature ok"
                     " (%s°C) to power on.."
-                    % (inv.curr_voltage, inv.temperature))
+                    % (inv.sma_voltage, inv.temperature))
                 inv.power_on()
 
         # Define a range +- 15 W starting from current consumption. We will not
