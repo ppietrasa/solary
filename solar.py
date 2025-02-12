@@ -632,8 +632,8 @@ class PowerOperator(mqtt.Client):
         # inverter when the battery voltage gets too low. Also, we protect the
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
-            # ~ 50% capacity
-            if inv.curr_voltage < 26.3:
+            # ~ 18.5% capacity (likely more because discharing)
+            if inv.curr_voltage < 25.7:
                 self.log("Battery low (%s V), about to power off.."
                     % inv.curr_voltage)
                 inv.power_off()
@@ -645,9 +645,9 @@ class PowerOperator(mqtt.Client):
                 return
             else:
                 pass
-                 # ~ 80% capacity
-        elif     inv.curr_voltage >= 26.5 \
-             and inv.temperature   < InverterOnBattery.HGH_TEMPERATURE - 10:
+                 # ~ 95% capacity (likely much less because charging)
+        elif     inv.curr_voltage > 26.7 \
+             and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%s V) and temperature ok"
                     " (%s°C) to power on.."
                     % (inv.curr_voltage, inv.temperature))
