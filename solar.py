@@ -133,7 +133,7 @@ class InverterOnBattery(object):
         self.curr_state = dict()
         self.curr_timestamp = int(time.time())
         self.yieldyesterday = 0
-        self._voltage_queue = collections.deque([25.6, 25.6], 9)
+        self._voltage_queue = collections.deque([25.6, 25.6], 18)
 
         #
         # see _send_cmd(), where (and only where) these are employed
@@ -203,7 +203,7 @@ class InverterOnBattery(object):
 
     @property
     def sma_voltage(self):
-        """Average voltage over the last few observations (up to 9 currently)"""
+        """Average voltage over the last few observations (up to 18 currently)"""
         return float(sum(self._voltage_queue) / len(self._voltage_queue))
 
     @property
