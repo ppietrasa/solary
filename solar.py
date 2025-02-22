@@ -95,6 +95,7 @@ class InverterOnBattery(object):
 
     LOW_VOLTAGE = 24.5
     HGH_VOLTAGE = 25.9
+    ABS_VOLTAGE = 28.4
     HGH_TEMPERATURE = 50
 
     def __init__(self, serial, bat_capacity=1280, base_topic='solar/'):
@@ -448,6 +449,8 @@ class PowerOperator(mqtt.Client):
         self.pw_bound_midpoint = pwmeters.total_power
         self._lst_msg = 'None'
         self.prev_date = datetime.date.today()
+        self._abs_timer = Timer(3 * 60)
+        self._absorbing = False
 
     def log(self, msg):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -628,7 +631,7 @@ class PowerOperator(mqtt.Client):
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
             # ~ 18.5% capacity (likely more because discharging)
-            if inv.sma_voltage < 25.7:
+            if inv.sma_voltage < 25.6:
                 self.log("Battery low (%s V), about to power off.."
                     % inv.sma_voltage)
                 inv.power_off()
@@ -691,6 +694,33 @@ class PowerOperator(mqtt.Client):
         # too quickly.
         target_power = math.floor(min(
             max(pwm.baseload, self.pw_bound_midpoint * sun_prct), inv.max_power))
+
+        #
+        # Handle battery absorption phase
+        #
+        if not self._absorbing and \
+                inv.curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
+                # btw ABS_VOLTAGE - 0.1 above is for tollerance
+            # Drawing much power now, drops the voltage drastically, leading to
+            # power-off followed by power-on. Keeping inverter off during the
+            # absorption phase helps. However, likely the sun is there when
+            # this happens, so let not all this power go to waste.
+            # Feeding/drawing some ~30W should not drop the voltage drastically,
+            # and still allow for the absorption phase.
+            target_power = math.floor(min(pwm.baseload, 30))
+            self.log("Absorption voltage %s reached. Reducing target to %s W"
+                    % (inv.curr_voltage, target_power))
+            self._abs_timer.restart()
+            self._absorbing = True
+        elif self._absorbing and not self._abs_timer.expired:
+            self.log("Absorbing %ss .." % self._abs_timer.elapsed)
+            target_power = math.floor(min(pwm.baseload, 30))
+        elif self._absorbing and self._abs_timer.expired:
+            target_power = math.floor(min(pwm.baseload, 30))
+            # Maybe the voltage dropped already below the ABS_VOLTAGE. We'll
+            # recheck on next run.
+            self._absorbing = False
+
         if target_power != inv.power_limit:
             self.log("Adjusting target power from %s W to %s W"
                 % (inv.power_limit, target_power))
