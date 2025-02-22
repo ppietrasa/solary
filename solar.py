@@ -553,7 +553,7 @@ class PowerOperator(mqtt.Client):
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
             if inv.sma_voltage < InverterOnBattery.LOW_VOLTAGE:
-                self.log("Battery low (%s V), about to power off.."
+                self.log("Battery low (%.2f V), about to power off.."
                     % inv.sma_voltage)
                 inv.power_off()
                 return
@@ -566,7 +566,7 @@ class PowerOperator(mqtt.Client):
                 pass
         elif     inv.sma_voltage >= InverterOnBattery.HGH_VOLTAGE \
              and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
-                self.log("Battery full enough (%s V) and temperature ok"
+                self.log("Battery full enough (%.2f V) and temperature ok"
                     " (%s°C) to power on.."
                     % (inv.sma_voltage, inv.temperature))
                 inv.power_on()
