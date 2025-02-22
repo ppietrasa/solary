@@ -632,7 +632,7 @@ class PowerOperator(mqtt.Client):
         if inv.is_on:
             # ~ 18.5% capacity (likely more because discharging)
             if inv.sma_voltage < 25.6:
-                self.log("Battery low (%s V), about to power off.."
+                self.log("Battery low (%.2f V), about to power off.."
                     % inv.sma_voltage)
                 inv.power_off()
                 return
@@ -646,7 +646,7 @@ class PowerOperator(mqtt.Client):
                  # ~ 95% capacity (likely much less because charging)
         elif     inv.sma_voltage > 26.7 \
              and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
-                self.log("Battery full enough (%s V) and temperature ok"
+                self.log("Battery full enough (%.2f V) and temperature ok"
                     " (%s°C) to power on.."
                     % (inv.sma_voltage, inv.temperature))
                 inv.power_on()
