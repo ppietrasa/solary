@@ -93,8 +93,10 @@ class InverterOnBattery(object):
         '/status/limit_absolute',
         ]
 
-    LOW_VOLTAGE = 24.5
-    HGH_VOLTAGE = 25.9
+    SUMMER_LOW_VOLTAGE = 24.5
+    SUMMER_HGH_VOLTAGE = 25.9
+    WINTER_LOW_VOLTAGE = 25.6
+    WINTER_HGH_VOLTAGE = 26.7
     ABS_VOLTAGE = 28.4
     HGH_TEMPERATURE = 50
 
@@ -134,6 +136,8 @@ class InverterOnBattery(object):
         self.curr_timestamp = int(time.time())
         self.yieldyesterday = 0
         self._voltage_queue = collections.deque([25.6, 25.6], 18)
+        self._on_voltage_queue = collections.deque([25.6, 25.6], 18)
+        self._off_voltage_queue = collections.deque([24.5, 24.5], 18)
 
         #
         # see _send_cmd(), where (and only where) these are employed
@@ -170,6 +174,11 @@ class InverterOnBattery(object):
         if '/1/voltage' in topic:
             new_voltage = float(payload)
             self._voltage_queue.append(new_voltage)
+            if self.is_on:
+                self._on_voltage_queue.append(new_voltage)
+            else:
+                self._off_voltage_queue.append(new_voltage)
+
         return prev_state != self.curr_state
 
     @property
@@ -205,6 +214,18 @@ class InverterOnBattery(object):
     def sma_voltage(self):
         """Average voltage over the last few observations (up to 18 currently)"""
         return float(sum(self._voltage_queue) / len(self._voltage_queue))
+
+    @property
+    def on_sma_voltage(self):
+        """Average voltage over the last few (18 currently) observations while
+        the inverter is on."""
+        return float(sum(self._on_voltage_queue) / len(self._on_voltage_queue))
+
+    @property
+    def off_sma_voltage(self):
+        """Average voltage over the last few (18 currently) observations while
+        the inverter is off."""
+        return float(sum(self._off_voltage_queue) / len(self._off_voltage_queue))
 
     @property
     def power(self):
@@ -518,6 +539,16 @@ class PowerOperator(mqtt.Client):
                 result += (' '*30 + '\n')
         return result
 
+
+    @staticmethod
+    def power_factor(target_voltage, current_voltage):
+        v_delta = 1.15
+        v_min = target_voltage - v_delta/2
+        pf = 1/v_delta * current_voltage - v_min/v_delta
+        log.info("Pf = 1/%s * %s - %s/%s = %s" % (v_delta, current_voltage,
+            v_min, v_delta, pf))
+        return min(max(pf,0), 1)
+
     def process(self):
 
         with open("solar.stats", "w") as stats_f:
@@ -536,7 +567,11 @@ class PowerOperator(mqtt.Client):
 
         curr_month = datetime.datetime.now().month
         if 3 <= curr_month < 10:
-            self.summer_program()
+            #self.summer_program()
+            self.general_program(0.9,
+                InverterOnBattery.SUMMER_LOW_VOLTAGE,
+                InverterOnBattery.SUMMER_HGH_VOLTAGE
+                )
         else:
             self.winter_program()
 
@@ -552,7 +587,7 @@ class PowerOperator(mqtt.Client):
         # inverter when the battery voltage gets too low. Also, we protect the
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
-            if inv.sma_voltage < InverterOnBattery.LOW_VOLTAGE:
+            if inv.sma_voltage < InverterOnBattery.SUMMER_LOW_VOLTAGE:
                 self.log("Battery low (%.2f V), about to power off.."
                     % inv.sma_voltage)
                 inv.power_off()
@@ -564,7 +599,7 @@ class PowerOperator(mqtt.Client):
                 return
             else:
                 pass
-        elif     inv.sma_voltage >= InverterOnBattery.HGH_VOLTAGE \
+        elif     inv.sma_voltage >= InverterOnBattery.SUMMER_HGH_VOLTAGE \
              and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%.2f V) and temperature ok"
                     " (%s°C) to power on.."
@@ -631,7 +666,7 @@ class PowerOperator(mqtt.Client):
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
             # ~ 18.5% capacity (likely more because discharging)
-            if inv.sma_voltage < 25.6:
+            if inv.sma_voltage < InverterOnBattery.WINTER_LOW_VOLTAGE:
                 self.log("Battery low (%.2f V), about to power off.."
                     % inv.sma_voltage)
                 inv.power_off()
@@ -644,7 +679,7 @@ class PowerOperator(mqtt.Client):
             else:
                 pass
                  # ~ 95% capacity (likely much less because charging)
-        elif     inv.sma_voltage > 26.7 \
+        elif     inv.sma_voltage > InverterOnBattery.WINTER_HGH_VOLTAGE \
              and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%.2f V) and temperature ok"
                     " (%s°C) to power on.."
@@ -726,6 +761,179 @@ class PowerOperator(mqtt.Client):
                 % (inv.power_limit, target_power))
             inv.power_limit = target_power
 
+    def general_program(self, sun_factor, low_voltage, high_voltage):
+        """Feed `sun_factor` of consumption during sun hours,
+        shutdown the inverter at `low_voltage` and startup at `high_voltage`.
+        """
+
+        sunrise_sunset_times = {
+            1:  {"sunrise": datetime.time(8,44),
+                 "sunset": datetime.time(16,10)},
+
+            2:  {"sunrise": datetime.time(8,11),
+                 "sunset": datetime.time(17,13)},
+
+            3:  {"sunrise": datetime.time(7,21),
+                 "sunset": datetime.time(18,3)},
+
+            4:  {"sunrise": datetime.time(7,8),
+                 "sunset": datetime.time(20,1)},
+
+            5:  {"sunrise": datetime.time(6,9),
+                 "sunset": datetime.time(20,47)},
+
+            6:  {"sunrise": datetime.time(5,38),
+                 "sunset": datetime.time(21,21)},
+
+            7:  {"sunrise": datetime.time(6,5),
+                 "sunset": datetime.time(21,5)},
+
+            8:  {"sunrise": datetime.time(6,49),
+                 "sunset": datetime.time(20,22)},
+
+            9:  {"sunrise": datetime.time(7,47),
+                 "sunset": datetime.time(19,3)},
+
+            10: {"sunrise": datetime.time(8,26),
+                 "sunset": datetime.time(18,4) },
+
+            11: {"sunrise": datetime.time(8,9),
+                 "sunset": datetime.time(16,7) },
+
+            12: {"sunrise": datetime.time(8,49),
+                 "sunset": datetime.time(15,44)}
+            }
+
+        # shortcuts to ease reading
+        inv = self.inverter
+        pwm = self.pwmeters
+
+        # Protective measures. We protect the battery by switching off the
+        # inverter when the battery voltage gets too low. Also, we protect the
+        # inverter itself from overheating, by monitoring its temperature.
+        if inv.is_on:
+            # ~ 18.5% capacity (likely more because discharging)
+            if inv.sma_voltage < low_voltage:
+                self.log("Battery low (%.2f V), about to power off.."
+                    % inv.sma_voltage)
+                inv.power_off()
+                return
+            elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
+                self.log("Temperature (%s°C) too high, about to power off.."
+                    % inv.temperature)
+                inv.power_off()
+                return
+            else:
+                pass
+                 # ~ 95% capacity (likely much less because charging)
+        elif     inv.sma_voltage > high_voltage \
+             and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
+                self.log("Battery full enough (%.2f V) and temperature ok"
+                    " (%s°C) to power on.."
+                    % (inv.sma_voltage, inv.temperature))
+                inv.power_on()
+
+        # Define a range +- 15 W starting from current consumption. We will not
+        # adjust the target feeding power unless consumption moves outside of
+        # this range, in which case we'll also readjust the range itself.
+        #
+        # Rationale:
+        # The consumption varies constantly and we don't want to be flooding
+        # inverter with adjustment commands (which anyway are late to the
+        # party/ only follow the changes in power). The DTU/inverter do not
+        # like excessive number of commands and become unresponsive.
+        if (    pwm.total_power < self.lower_pw_bound
+             or pwm.total_power > self.upper_pw_bound
+           ):
+            log.debug("Consumption (%s W) outside of range [%s..%s]" %
+                (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
+            new_pw_bound_midpoint = int(round(pwm.total_power))
+            new_lower_pw_bound = new_pw_bound_midpoint - 12
+            new_upper_pw_bound = new_pw_bound_midpoint + 12
+            log.debug("New range: [%s..%s]"
+                % (new_lower_pw_bound, new_upper_pw_bound))
+            self.lower_pw_bound = new_lower_pw_bound
+            self.upper_pw_bound = new_upper_pw_bound
+            self.pw_bound_midpoint = new_pw_bound_midpoint
+        else:
+            log.debug("Consumption (%s W) within range [%s..%s]"
+                % (pwm.total_power, self.lower_pw_bound, self.upper_pw_bound))
+
+
+        now = datetime.datetime.now().time()
+        curr_month = datetime.datetime.now().month
+
+        assert 12 >= curr_month > 0, "current month is %s" % curr_month
+        sun_start = sunrise_sunset_times[curr_month]["sunrise"]
+        sun_end   = sunrise_sunset_times[curr_month]["sunset"]
+        sun_prct = sun_factor if sun_start <= now <= sun_end else 0.4
+
+        # calculate the power factor
+        # The idea is to keep the voltage stable. We'll increase the power
+        # if voltage exceeds target and decrease it drops below the target.
+        target_voltage = inv.on_sma_voltage
+        pwr_factor = self.power_factor(target_voltage, inv.curr_voltage)
+        # XXX HACK
+        pwr_factor = 1
+
+        # Adjust the output power (target_power) by setting the power_limit.
+        # Theoretically, the inverter output should not exceed the limit, but
+        # it often does so. It typically stays +/- few Watt from the limit.
+        #
+        # We choose the target_power to follow the midpoint of the range we
+        # defined few lines above reduced by a certain % factor, depending on
+        # the chances of sun. We thus try to reduce changes of leaking energy
+        # to the grid when consumption suddenly drops, to bypass the battery
+        # the bigger the chances of the sun, and not too exhaust the battery
+        # too quickly.
+        target_power = math.floor(
+            min(
+                max(pwm.baseload,
+                    self.pw_bound_midpoint * min(sun_prct, pwr_factor)),
+                inv.max_power
+            )
+        )
+        log.info("min(max(%s, %s * min(%s, %s)), %s) gives %s" %
+            (pwm.baseload,
+             self.pw_bound_midpoint,
+             sun_prct,
+             pwr_factor,
+             inv.max_power,
+             target_power)
+            )
+
+
+
+        #
+        # Handle battery absorption phase
+        #
+        if not self._absorbing and \
+                inv.curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
+                # btw ABS_VOLTAGE - 0.1 above is for tollerance
+            # Drawing much power now, drops the voltage drastically, leading to
+            # power-off followed by power-on. Keeping inverter off during the
+            # absorption phase helps. However, likely the sun is there when
+            # this happens, so let not all this power go to waste.
+            # Feeding/drawing some ~30W should not drop the voltage drastically,
+            # and still allow for the absorption phase.
+            target_power = math.floor(min(pwm.baseload, 30))
+            self.log("Absorption voltage %s reached. Reducing target to %s W"
+                    % (inv.curr_voltage, target_power))
+            self._abs_timer.restart()
+            self._absorbing = True
+        elif self._absorbing and not self._abs_timer.expired:
+            self.log("Absorbing %ss .." % self._abs_timer.elapsed)
+            target_power = math.floor(min(pwm.baseload, 30))
+        elif self._absorbing and self._abs_timer.expired:
+            target_power = math.floor(min(pwm.baseload, 30))
+            # Maybe the voltage dropped already below the ABS_VOLTAGE. We'll
+            # recheck on next run.
+            self._absorbing = False
+
+        if target_power != inv.power_limit:
+            self.log("Adjusting target power from %s W to %s W"
+                % (inv.power_limit, target_power))
+            inv.power_limit = target_power
 
 def main():
     arg_parser = argparse.ArgumentParser(
