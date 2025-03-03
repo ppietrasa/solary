@@ -135,7 +135,7 @@ class InverterOnBattery(object):
         self.curr_state = dict()
         self.curr_timestamp = int(time.time())
         self.yieldyesterday = 0
-        self._voltage_queue = collections.deque([25.6, 25.6], 18)
+        self._voltage_queue = collections.deque([25.6, 25.6], 50)
         self._on_voltage_queue = collections.deque([25.6, 25.6], 18)
         self._off_voltage_queue = collections.deque([24.5, 24.5], 18)
 
@@ -209,6 +209,28 @@ class InverterOnBattery(object):
     def curr_voltage(self):
         """Current voltage of the battery."""
         return float(self._voltage_queue[-1])
+
+    def n_readings_sma_voltage(self, n):
+        """Average voltage over `n` observations"""
+        voltages = list(self._voltage_queue)
+        my_n = min(len(voltages), n)
+        return float(sum(voltages[-my_n:]) / my_n)
+
+    def n_readings_wma_voltage(self, n):
+        """Average voltage over `n` observations"""
+        numerator = 0; denominator = 0
+        for (k, v) in enumerate(reversed(self._voltage_queue)):
+            if k < n:
+                numerator   += (n-k)*v
+                denominator += (n-k)
+            else:
+                break
+        return numerator/max(1, denominator)
+
+    @property
+    def sma_voltage(self):
+        """Average voltage over the last few observations (up to 18 currently)"""
+        return float(sum(self._voltage_queue) / len(self._voltage_queue))
 
     @property
     def sma_voltage(self):
@@ -472,6 +494,47 @@ class PowerOperator(mqtt.Client):
         self.prev_date = datetime.date.today()
         self._abs_timer = Timer(3 * 60)
         self._absorbing = False
+        # runrise/sunset times per month of year
+        self.sunrise_sunset_times = {
+            1:  {"sunrise": datetime.time(8,44),
+                 "sunset": datetime.time(16,10)},
+
+            2:  {"sunrise": datetime.time(8,11),
+                 "sunset": datetime.time(17,13)},
+
+            3:  {"sunrise": datetime.time(7,21),
+                 "sunset": datetime.time(18,3)},
+
+            4:  {"sunrise": datetime.time(7,8),
+                 "sunset": datetime.time(20,1)},
+
+            5:  {"sunrise": datetime.time(6,9),
+                 "sunset": datetime.time(20,47)},
+
+            6:  {"sunrise": datetime.time(5,38),
+                 "sunset": datetime.time(21,21)},
+
+            7:  {"sunrise": datetime.time(6,5),
+                 "sunset": datetime.time(21,5)},
+
+            8:  {"sunrise": datetime.time(6,49),
+                 "sunset": datetime.time(20,22)},
+
+            9:  {"sunrise": datetime.time(7,47),
+                 "sunset": datetime.time(19,3)},
+
+            10: {"sunrise": datetime.time(8,26),
+                 "sunset": datetime.time(18,4) },
+
+            11: {"sunrise": datetime.time(8,9),
+                 "sunset": datetime.time(16,7) },
+
+            12: {"sunrise": datetime.time(8,49),
+                 "sunset": datetime.time(15,44)}
+            }
+        # How big a portion of energy consumption to feed. Between 0 and 1.
+        self.pwr_factor = 0.5
+        self._pwr_factor_timer = Timer(7)
 
     def log(self, msg):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -766,56 +829,22 @@ class PowerOperator(mqtt.Client):
         shutdown the inverter at `low_voltage` and startup at `high_voltage`.
         """
 
-        sunrise_sunset_times = {
-            1:  {"sunrise": datetime.time(8,44),
-                 "sunset": datetime.time(16,10)},
-
-            2:  {"sunrise": datetime.time(8,11),
-                 "sunset": datetime.time(17,13)},
-
-            3:  {"sunrise": datetime.time(7,21),
-                 "sunset": datetime.time(18,3)},
-
-            4:  {"sunrise": datetime.time(7,8),
-                 "sunset": datetime.time(20,1)},
-
-            5:  {"sunrise": datetime.time(6,9),
-                 "sunset": datetime.time(20,47)},
-
-            6:  {"sunrise": datetime.time(5,38),
-                 "sunset": datetime.time(21,21)},
-
-            7:  {"sunrise": datetime.time(6,5),
-                 "sunset": datetime.time(21,5)},
-
-            8:  {"sunrise": datetime.time(6,49),
-                 "sunset": datetime.time(20,22)},
-
-            9:  {"sunrise": datetime.time(7,47),
-                 "sunset": datetime.time(19,3)},
-
-            10: {"sunrise": datetime.time(8,26),
-                 "sunset": datetime.time(18,4) },
-
-            11: {"sunrise": datetime.time(8,9),
-                 "sunset": datetime.time(16,7) },
-
-            12: {"sunrise": datetime.time(8,49),
-                 "sunset": datetime.time(15,44)}
-            }
 
         # shortcuts to ease reading
         inv = self.inverter
         pwm = self.pwmeters
+
+        curr_voltage_smoothed = inv.n_readings_sma_voltage(7)
+        curr_voltage = inv.curr_voltage
 
         # Protective measures. We protect the battery by switching off the
         # inverter when the battery voltage gets too low. Also, we protect the
         # inverter itself from overheating, by monitoring its temperature.
         if inv.is_on:
             # ~ 18.5% capacity (likely more because discharging)
-            if inv.sma_voltage < low_voltage:
+            if curr_voltage_smoothed < low_voltage:
                 self.log("Battery low (%.2f V), about to power off.."
-                    % inv.sma_voltage)
+                    % curr_voltage_smoothed)
                 inv.power_off()
                 return
             elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
@@ -826,11 +855,11 @@ class PowerOperator(mqtt.Client):
             else:
                 pass
                  # ~ 95% capacity (likely much less because charging)
-        elif     inv.sma_voltage > high_voltage \
-             and inv.temperature  < InverterOnBattery.HGH_TEMPERATURE - 10:
+        elif     curr_voltage_smoothed > high_voltage \
+             and inv.temperature < InverterOnBattery.HGH_TEMPERATURE - 10:
                 self.log("Battery full enough (%.2f V) and temperature ok"
                     " (%s°C) to power on.."
-                    % (inv.sma_voltage, inv.temperature))
+                    % (curr_voltage_smoothed, inv.temperature))
                 inv.power_on()
 
         # Define a range +- 15 W starting from current consumption. We will not
@@ -864,17 +893,33 @@ class PowerOperator(mqtt.Client):
         curr_month = datetime.datetime.now().month
 
         assert 12 >= curr_month > 0, "current month is %s" % curr_month
-        sun_start = sunrise_sunset_times[curr_month]["sunrise"]
-        sun_end   = sunrise_sunset_times[curr_month]["sunset"]
+        sun_start = self.sunrise_sunset_times[curr_month]["sunrise"]
+        sun_end   = self.sunrise_sunset_times[curr_month]["sunset"]
         sun_prct = sun_factor if sun_start <= now <= sun_end else 0.4
 
-        # calculate the power factor
-        # The idea is to keep the voltage stable. We'll increase the power
-        # if voltage exceeds target and decrease it drops below the target.
-        target_voltage = inv.on_sma_voltage
-        pwr_factor = self.power_factor(target_voltage, inv.curr_voltage)
-        # XXX HACK
-        pwr_factor = 1
+
+        if self._pwr_factor_timer.expired:
+            # Lets see if our adjustments brought something.
+            # Maybe we need to continue ajusting the power factor.
+            wma_v_long  = inv.n_readings_wma_voltage(35)
+            wma_v_short = inv.n_readings_wma_voltage(14)
+            delta_wma_v = wma_v_long - wma_v_short
+            abs_wma_delta_v = abs(delta_wma_v)
+            if wma_v_short > wma_v_long and abs_wma_delta_v > 0.01:
+                # we are charging lets feed some more
+                self.pwr_factor += min(1, 0.5*abs_wma_delta_v)
+            elif wma_v_short < wma_v_long and abs_wma_delta_v > 0.01:
+                # we are discharging lets feed less
+                self.pwr_factor -= min(1, 0.5*abs_wma_delta_v)
+            else:
+                # this is stable enough, keep it for the time being
+                pass
+            self._pwr_factor_timer.restart()
+            self.pwr_factor = max(0, min(1, self.pwr_factor))
+            log.info("wma_v_long  = %s" % wma_v_long)
+            log.info("wma_v_short = %s" % wma_v_short)
+            log.info("delta_wma_v = %s" % delta_wma_v)
+            log.info("Pf = %s" % self.pwr_factor)
 
         # Adjust the output power (target_power) by setting the power_limit.
         # Theoretically, the inverter output should not exceed the limit, but
@@ -889,7 +934,7 @@ class PowerOperator(mqtt.Client):
         target_power = math.floor(
             min(
                 max(pwm.baseload,
-                    self.pw_bound_midpoint * min(sun_prct, pwr_factor)),
+                    self.pw_bound_midpoint * min(sun_prct, self.pwr_factor)),
                 inv.max_power
             )
         )
@@ -897,7 +942,7 @@ class PowerOperator(mqtt.Client):
             (pwm.baseload,
              self.pw_bound_midpoint,
              sun_prct,
-             pwr_factor,
+             self.pwr_factor,
              inv.max_power,
              target_power)
             )
@@ -908,7 +953,7 @@ class PowerOperator(mqtt.Client):
         # Handle battery absorption phase
         #
         if not self._absorbing and \
-                inv.curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
+                curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
                 # btw ABS_VOLTAGE - 0.1 above is for tollerance
             # Drawing much power now, drops the voltage drastically, leading to
             # power-off followed by power-on. Keeping inverter off during the
@@ -918,7 +963,7 @@ class PowerOperator(mqtt.Client):
             # and still allow for the absorption phase.
             target_power = math.floor(min(pwm.baseload, 30))
             self.log("Absorption voltage %s reached. Reducing target to %s W"
-                    % (inv.curr_voltage, target_power))
+                    % (curr_voltage, target_power))
             self._abs_timer.restart()
             self._absorbing = True
         elif self._absorbing and not self._abs_timer.expired:
