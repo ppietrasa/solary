@@ -916,37 +916,20 @@ class PowerOperator(mqtt.Client):
                 pass
             self._pwr_factor_timer.restart()
             self.pwr_factor = max(0, min(1, self.pwr_factor))
-            log.info("wma_v_long  = %s" % wma_v_long)
-            log.info("wma_v_short = %s" % wma_v_short)
-            log.info("delta_wma_v = %s" % delta_wma_v)
+            log.info("wma_v_long  = %.7f" % wma_v_long)
+            log.info("wma_v_short = %.7f" % wma_v_short)
+            log.info("delta_wma_v = %.7f" % delta_wma_v)
             log.info("Pf = %s" % self.pwr_factor)
 
-        # Adjust the output power (target_power) by setting the power_limit.
-        # Theoretically, the inverter output should not exceed the limit, but
-        # it often does so. It typically stays +/- few Watt from the limit.
-        #
-        # We choose the target_power to follow the midpoint of the range we
-        # defined few lines above reduced by a certain % factor, depending on
-        # the chances of sun. We thus try to reduce changes of leaking energy
-        # to the grid when consumption suddenly drops, to bypass the battery
-        # the bigger the chances of the sun, and not too exhaust the battery
-        # too quickly.
+        # we are not going to feed more then 20W below current consumption
+        max_feed = max(0, pwm.total_power - 20)
+        min_feed = 7
+        # comment me
         target_power = math.floor(
-            min(
-                max(pwm.baseload,
-                    self.pw_bound_midpoint * min(sun_prct, self.pwr_factor)),
-                inv.max_power
+            max(min_feed, min(max_feed, self.pwr_factor * inv.max_power))
             )
-        )
-        log.info("min(max(%s, %s * min(%s, %s)), %s) gives %s" %
-            (pwm.baseload,
-             self.pw_bound_midpoint,
-             sun_prct,
-             self.pwr_factor,
-             inv.max_power,
-             target_power)
-            )
-
+        log.info("max(%s, min(%s, %.2f * %.2f) gives %s" %
+            (min_feed, max_feed, self.pwr_factor, inv.max_power, target_power))
 
 
         #
