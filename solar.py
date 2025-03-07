@@ -502,11 +502,11 @@ class PowerOperator(mqtt.Client):
         #p -235 (oscilates)
         #p -175 (oscilates)
 
-        self.pid = PID(-128.0, -10, 6, setpoint=25.3,
+        self.pid = PID(-128.0, -5, 6, setpoint=25.6,
                 proportional_on_measurement=False,
                 differential_on_measurement=False)
         self.pid_sample_time = 5
-        self.pid.output_limits = (10, 242)
+        self.pid.output_limits = (10, inverter.max_power)
 
         # runrise/sunset times per month of year
         self.sunrise_sunset_times = {
@@ -700,8 +700,8 @@ class PowerOperator(mqtt.Client):
         assert 12 >= curr_month > 0, "current month is %s" % curr_month
         sun_start = self.sunrise_sunset_times[curr_month]["sunrise"]
         sun_end   = self.sunrise_sunset_times[curr_month]["sunset"]
-        sun_prct = sun_factor if sun_start <= now <= sun_end else 0.4
-
+        is_day    = sun_start <= now <= sun_end
+        is_night  = not is_day
 
         if self.voltage_reading_num != inv.voltage_reading_num:
             # we've got new reading which we react to
@@ -709,10 +709,19 @@ class PowerOperator(mqtt.Client):
             log.info("voltage reading: #%s" % self.voltage_reading_num)
 
             sma_v_long  = inv.n_readings_sma_voltage(500)
-            max_feed = max(pwm.baseload, pwm.total_power - 20.0)
-            min_feed = 7.0
-            #self.pid.setpoint = 25.8#sma_v_long
-            #self.pid.output_limits = (min_feed, max_feed)
+            if is_day:
+                log.info("It's day")
+                max_feed = max(pwm.baseload, pwm.total_power - 20.0)
+                min_feed = min(pwm.baseload, 20.0)
+                self.pid.setpoint = round(sma_v_long, 1)
+            else:
+                log.info("It's night") # we want to discharge slowly
+                max_feed = max(pwm.baseload, min(45, pwm.total_power))
+                min_feed = 10.0
+                self.pid.setpoint = 25.7
+
+            log.info("new output_limits: [%s, %s]" % (min_feed, max_feed))
+            self.pid.output_limits = (min_feed, max_feed)
             target_power = self.pid(inv.curr_voltage)
             self.log("setpoint: %.4f" % self.pid.setpoint)
             self.log("current_voltage: %s" % inv.curr_voltage)
