@@ -5,7 +5,7 @@ import collections, io, datetime
 from simple_pid import PID
 
 VERSION='0.0.1'
-BROKER='docstar'
+BROKER='localhost'
 BROKER_PORT=1883
 
 log  = logging.getLogger(__name__)
@@ -519,10 +519,11 @@ class PowerOperator(mqtt.Client):
         #p -235 (oscilates)
         #p -175 (oscilates)
 
-        self.pid = PID(-230.0, -0, 300, setpoint=25.8,
-                proportional_on_measurement=True,
+        self.pid = PID(-128.0, -10, 6, setpoint=25.3,
+                proportional_on_measurement=False,
                 differential_on_measurement=False)
         self.pid_sample_time = 5
+        self.pid.output_limits = (10, 242)
 
         # runrise/sunset times per month of year
         self.sunrise_sunset_times = {
@@ -736,7 +737,7 @@ class PowerOperator(mqtt.Client):
             max_feed = max(pwm.baseload, pwm.total_power - 20.0)
             min_feed = 7.0
             #self.pid.setpoint = 25.8#sma_v_long
-            self.pid.output_limits = (min_feed, max_feed)
+            #self.pid.output_limits = (min_feed, max_feed)
             target_power = self.pid(inv.curr_voltage)
             self.log("setpoint: %.4f" % self.pid.setpoint)
             self.log("current_voltage: %s" % inv.curr_voltage)
