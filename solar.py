@@ -138,7 +138,6 @@ class InverterOnBattery(object):
         self.yieldyesterday = 0
         self._voltage_queue = collections.deque([25.6, 25.6], 540)
         self.voltage_reading_num = 0
-        self._on_voltage_queue = collections.deque([25.6, 25.6], 18)
         self._off_voltage_queue = collections.deque([24.5, 24.5], 18)
 
         #
@@ -177,10 +176,6 @@ class InverterOnBattery(object):
             new_voltage = float(payload)
             self._voltage_queue.append(new_voltage)
             self.voltage_reading_num += 1
-            if self.is_on:
-                self._on_voltage_queue.append(new_voltage)
-            else:
-                self._off_voltage_queue.append(new_voltage)
 
         return prev_state != self.curr_state
 
@@ -252,18 +247,6 @@ class InverterOnBattery(object):
     def sma_voltage(self):
         """Average voltage over the last few observations (up to 18 currently)"""
         return float(sum(self._voltage_queue) / len(self._voltage_queue))
-
-    @property
-    def on_sma_voltage(self):
-        """Average voltage over the last few (18 currently) observations while
-        the inverter is on."""
-        return float(sum(self._on_voltage_queue) / len(self._on_voltage_queue))
-
-    @property
-    def off_sma_voltage(self):
-        """Average voltage over the last few (18 currently) observations while
-        the inverter is off."""
-        return float(sum(self._off_voltage_queue) / len(self._off_voltage_queue))
 
     @property
     def power(self):
@@ -724,14 +707,6 @@ class PowerOperator(mqtt.Client):
             # we've got new reading which we react to
             self.voltage_reading_num = inv.voltage_reading_num
             log.info("voltage reading: #%s" % self.voltage_reading_num)
-
-            # stearing singal min, max
-            ss_max = 6
-            ss_min = -ss_max
-            log.info("ss_max = %.2f" % ss_max)
-
-            v_delta_max = 0.0999999
-            v_delta_min = -v_delta_max
 
             sma_v_long  = inv.n_readings_sma_voltage(500)
             max_feed = max(pwm.baseload, pwm.total_power - 20.0)
