@@ -686,11 +686,15 @@ class PowerOperator(mqtt.Client):
                 self.log("Battery low (%.2f V), about to power off.."
                     % curr_voltage_smoothed)
                 inv.power_off()
+                self.pid.set_auto_mode(False)
+                self.pid_last_output = self.last_output
                 return
             elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
                 self.log("Temperature (%s°C) too high, about to power off.."
                     % inv.temperature)
                 inv.power_off()
+                self.pid.set_auto_mode(False)
+                self.pid_last_output = self.last_output
                 return
             else:
                 pass
@@ -701,6 +705,7 @@ class PowerOperator(mqtt.Client):
                     " (%s°C) to power on.."
                     % (curr_voltage_smoothed, inv.temperature))
                 inv.power_on()
+                self.pid.set_auto_mode(True, self.pid_last_output)
 
 
         now = datetime.datetime.now().time()
