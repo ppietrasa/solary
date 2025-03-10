@@ -99,6 +99,7 @@ class InverterOnBattery(object):
     WINTER_LOW_VOLTAGE = 25.6
     WINTER_HGH_VOLTAGE = 26.7
     ABS_VOLTAGE = 28.4
+    FLOAT_VOLTAGE = 27.2
     HGH_TEMPERATURE = 50
 
     def __init__(self, serial, bat_capacity=1280, base_topic='solar/'):
@@ -234,6 +235,17 @@ class InverterOnBattery(object):
             if k < n:
                 numerator   += (n-k)*v
                 denominator += (n-k)
+            else:
+                break
+        return numerator/max(1, denominator)
+
+    def n_readings_iwma_voltage(self, n):
+        """Inverse weight moving avarage of voltage over `n` observations"""
+        numerator = 0; denominator = 0
+        for (k, v) in enumerate(reversed(self._voltage_queue)):
+            if k < n:
+                numerator   += (k+1)*v
+                denominator += (k+1)
             else:
                 break
         return numerator/max(1, denominator)
@@ -418,20 +430,20 @@ class PowerMeters(object):
         'tele/fridge/SENSOR'
         ]
 
-    def __init__(self, baseload = 27):
+    def __init__(self, base_load = 27):
         """
         Parameters
         ----------
-        baseload: int
+        base_load: int
             The consumption base load not covered by any power meters. The
-            baseload will be included in the total_power reported by all the
+            base_load will be included in the total_load reported by all the
             power meters.
             Default = 27 ; 18.8 (router) + 4.8 (docstar) + 3.6 (kitchen/canteen)
         """
         self.topics = PowerMeters.TOPICS
          # maps sensor name (like 'tv') to power in W
         self.curr_state = dict()
-        self.baseload = baseload
+        self.base_load = base_load
 
     def update(self, topic, payload):
         prev_state = copy.copy(self.curr_state)
@@ -446,8 +458,8 @@ class PowerMeters(object):
 
     def stats_as_str(self):
         curr_state = collections.OrderedDict(self.curr_state)
-        curr_state['baseload'] = self.baseload
-        curr_state['total']    = self.total_power
+        curr_state['base_load'] = self.base_load
+        curr_state['total']    = self.total_load
         max_name_length = max(len(pwmeter_name)
             for pwmeter_name in curr_state.keys())
         max_value_length = max(len(str(value))
@@ -469,13 +481,13 @@ class PowerMeters(object):
         return result
 
     @property
-    def total_power(self):
+    def total_load(self):
         """Total power measured by all the power meters"""
-        total_power=self.baseload
+        total_load=self.base_load
         for sensor in self.curr_state:
             sensor_power = self.curr_state.get(sensor, 0)
-            total_power += sensor_power
-        return total_power
+            total_load += sensor_power
+        return total_load
 
 class PowerOperator(mqtt.Client):
     """Monitors power meters, battery, inverter and adjusts the inverter based
@@ -486,16 +498,14 @@ class PowerOperator(mqtt.Client):
         self.pwmeters = pwmeters
         # we are a friend of inverter, which sends out commands on our behalf
         self.inverter.publisher = self
-        self.lower_pw_bound = pwmeters.total_power - 15
-        self.upper_pw_bound = pwmeters.total_power + 15
-        self.pw_bound_midpoint = pwmeters.total_power
         self._lst_msg = 'None'
         self.prev_date = datetime.date.today()
-        self._abs_timer = Timer(3 * 60)
+        self._timer = Timer(3 * 60)
         self._absorbing = False
+        self._floating  = False
 
-        self.power = inverter.max_power / 2
-        self.power = 11
+        self.last_output = self.pwmeters.base_load
+        self.pid_last_output = self.last_output
 
         self.voltage_reading_num = 0
 
@@ -546,9 +556,6 @@ class PowerOperator(mqtt.Client):
             12: {"sunrise": datetime.time(8,49),
                  "sunset": datetime.time(15,44)}
             }
-        # How big a portion of energy consumption to feed. Between 0 and 1.
-        self.pwr_factor = 0.5
-        self._pwr_factor_timer = Timer(7)
 
     def log(self, msg):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -585,9 +592,8 @@ class PowerOperator(mqtt.Client):
         pwm_stats = self.pwmeters.stats_as_str()
         stats     = self._join_tables_side_by_side(inv_stats, pwm_stats)
         print(file = stats_f)
-        print('consuming: %*s W (range [%s..%s])'
-            % (5, self.pwmeters.total_power, self.lower_pw_bound,
-                self.upper_pw_bound)
+        print('consuming: %*s W'
+            % (5, self.pwmeters.total_load)
             , file = stats_f)
         print('feeding  : %*s W (target %s W)'
             % (5, self.inverter.power, self.inverter.power_limit)
@@ -660,13 +666,12 @@ class PowerOperator(mqtt.Client):
         shutdown the inverter at `low_voltage` and startup at `high_voltage`.
         """
 
-
         # shortcuts to ease reading
         inv = self.inverter
         pwm = self.pwmeters
 
         curr_voltage_smoothed = inv.n_readings_sma_voltage(7)
-        curr_voltage = inv.curr_voltage
+        target_power = self.last_output
 
         # Protective measures. We protect the battery by switching off the
         # inverter when the battery voltage gets too low. Also, we protect the
@@ -703,38 +708,99 @@ class PowerOperator(mqtt.Client):
         is_day    = sun_start <= now <= sun_end
         is_night  = not is_day
 
+        if not self._absorbing and \
+                   inv.curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
+                # do not fight the load controler, if it wants to go on with
+                # absorbtion phase
+                log.info("Absorbing..") # we want to discharge slowly
+                self.pid.set_auto_mode(False)
+                self.pid_last_output = self.last_output
+                self._timer.restart()
+                self._absorbing = True
+        elif self._absorbing and not self._timer.expired:
+            log.info("Still absorbing %ss .." % self._timer.elapsed)
+            pass
+        elif self._absorbing and self._timer.expired:
+            # Maybe the voltage dropped already below the ABS_VOLTAGE.
+            # We'll recheck on next run.
+            self._absorbing = False
+            self.pid.set_auto_mode(True, self.pid_last_output)
+            return
+
+        if not self._floating and \
+               inv.curr_voltage >= (InverterOnBattery.FLOAT_VOLTAGE - 0.1):
+            # do not fight the load controler, if it wants to go on with
+            # float phase
+            log.info("Floating..") # we want to discharge slowly
+            self.pid.set_auto_mode(False)
+            self.pid_last_output = self.last_output
+            self._timer.restart()
+            self._floating = True
+        elif self._floating and not self._timer.expired:
+            log.info("Still floating %ss .." % self._timer.elapsed)
+            pass
+        elif self._floating and self._timer.expired:
+            # Maybe the voltage dropped already below the FLOAT_VOLTAGE.
+            # We'll recheck on next run.
+            self._floating = False
+            self.pid.set_auto_mode(True, self.pid_last_output)
+            return
+
+        # Floating and aborting are impossible at the same time
+        if self._absorbing:
+            assert(self._floating == False)
+        if self._floating:
+            assert(self._absorbing == False)
+
+        if self._absorbing:
+            # Generally we keep the last output power. However, we should
+            # keep watch if the load drops, we better drop too.
+            target_power = min(self.last_output, pwm.total_load)
+        if self._floating:
+            target_power = max(pwm.base_load, pwm.total_load - 10)
+
         if self.voltage_reading_num != inv.voltage_reading_num:
             # we've got new reading which we react to
             self.voltage_reading_num = inv.voltage_reading_num
-            log.info("voltage reading: #%s" % self.voltage_reading_num)
+            log.info("#%s voltage reading:" % self.voltage_reading_num)
 
-            sma_v_long  = inv.n_readings_sma_voltage(500)
-            if is_day:
-                log.info("It's day")
-                max_feed = max(pwm.baseload, pwm.total_power - 20.0)
-                min_feed = min(pwm.baseload, 20.0)
-                self.pid.setpoint = round(sma_v_long, 1)
-            else:
-                log.info("It's night") # we want to discharge slowly
-                max_feed = max(pwm.baseload, min(45, pwm.total_power))
-                min_feed = 10.0
-                self.pid.setpoint = 25.7
+            if self.pid.auto_mode:
+                log.info("current_voltage: %s" % inv.curr_voltage)
+                target_voltage = 25.6
+                if is_day:
+                    log.info("It's a day")
+                    target_voltage = round(inv.n_readings_iwma_voltage(500), 1)
+                    max_feed = max(pwm.base_load, pwm.total_load - 10.0)
+                    min_feed = min(pwm.base_load, 20.0)
+                else:
+                    log.info("It's a night") # we want to discharge slowly
+                    target_voltage = 25.6
+                    max_feed = max(pwm.base_load, min(45, pwm.total_load))
+                    min_feed = 10.0
 
-            log.info("new output_limits: [%s, %s]" % (min_feed, max_feed))
-            self.pid.output_limits = (min_feed, max_feed)
-            target_power = self.pid(inv.curr_voltage)
-            self.log("setpoint: %.4f" % self.pid.setpoint)
-            self.log("current_voltage: %s" % inv.curr_voltage)
-            self.log("%s = pid(%s)" % (target_power, inv.curr_voltage))
+                log.info("current_voltage: %s" % inv.curr_voltage)
+                log.info("target_voltage : %s" % target_voltage)
 
-            p, i, d = self.pid.components
-            self.log("%.1f -> %.3f(%.3f, %3f, %3f)" %  (inv.curr_voltage, target_power, p, i, d))
-            target_power = int(round(target_power))
+                if self.pid.setpoint != target_voltage:
+                    self.pid.setpoint = round(target_voltage, 1)
+                    log.info("new pid.setpoint = %.1f" % self.pid.setpoint)
+                if self.pid.output_limits != (min_feed, max_feed):
+                    self.pid.output_limits = (min_feed, max_feed)
+                    log.info("new pid.output_limits: [%s, %s]"
+                            % (min_feed, max_feed))
 
-            if target_power != inv.power_limit:
-                self.log("Adjusting target power from %s W to %s W"
-                    % (inv.power_limit, target_power))
-                inv.power_limit = target_power
+                target_power = self.pid(inv.curr_voltage)
+                log.info("target_power : %s" % target_power)
+                p, i, d = self.pid.components
+                log.debug("%.1f -> %.3f(%.3f, %3f, %3f)" %  (inv.curr_voltage,
+                    target_power, p, i, d))
+                target_power = int(round(target_power))
+
+        if target_power != inv.power_limit:
+            log.info("Adjusting target power from %s W to %s W"
+                % (inv.power_limit, target_power))
+            inv.power_limit = target_power
+            self.last_output = target_power
 
 def main():
     arg_parser = argparse.ArgumentParser(
@@ -771,7 +837,7 @@ def main():
 
     try:
         inverter = InverterOnBattery('112183843243')
-        pwmeters = PowerMeters(baseload = 27)
+        pwmeters = PowerMeters(base_load = 27)
         operator = PowerOperator(inverter, pwmeters)
 
         operator.connect(BROKER, BROKER_PORT, 60)
