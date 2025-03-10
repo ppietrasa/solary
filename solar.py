@@ -556,6 +556,7 @@ class PowerOperator(mqtt.Client):
             12: {"sunrise": datetime.time(8,49),
                  "sunset": datetime.time(15,44)}
             }
+        self._initialized = False
 
     def log(self, msg):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -567,6 +568,9 @@ class PowerOperator(mqtt.Client):
         log.debug(msg.topic+" "+str(msg.payload))
         pwmeters_udpated = self.pwmeters.update(msg.topic, msg.payload)
         inverter_updated = self.inverter.update(msg.topic, msg.payload)
+        if not self._initialized:
+            self.initialize()
+            return
         if pwmeters_udpated or inverter_updated:
             self.process()
 
@@ -623,14 +627,14 @@ class PowerOperator(mqtt.Client):
         return result
 
 
-    @staticmethod
-    def power_factor(target_voltage, current_voltage):
-        v_delta = 1.15
-        v_min = target_voltage - v_delta/2
-        pf = 1/v_delta * current_voltage - v_min/v_delta
-        log.info("Pf = 1/%s * %s - %s/%s = %s" % (v_delta, current_voltage,
-            v_min, v_delta, pf))
-        return min(max(pf,0), 1)
+    def initialize(self):
+        self.log("Initializing..")
+        if self.inverter.voltage_reading_num >= 3:
+            # Lets get few reading from the inverter before
+            # deciding on any action. To get current limits,
+            # populate voltage queues, etc..
+            self._initialized = True
+            self.log("Initialized!")
 
     def process(self):
 
