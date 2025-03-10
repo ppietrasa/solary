@@ -804,6 +804,9 @@ class PowerOperator(mqtt.Client):
                 log.debug("%.1f -> %.3f(%.3f, %3f, %3f)" %  (inv.curr_voltage,
                     target_power, p, i, d))
                 target_power = int(round(target_power))
+                log.info("pid_csv: %.1f, %.1f, %d, %d, %d, %d" % (
+                    self.pid.setpoint, inv.curr_voltage, target_power,
+                    inv.power_limit, min_feed, max_feed))
 
         if target_power != inv.power_limit:
             log.info("Adjusting target power from %s W to %s W"
