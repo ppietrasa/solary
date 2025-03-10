@@ -790,6 +790,18 @@ class PowerOperator(mqtt.Client):
                 log.info("current_voltage: %s" % inv.curr_voltage)
                 log.info("target_voltage : %s" % target_voltage)
 
+                # Will further resticting pid output range help the PID
+                # controller oscilate less drastically?
+                # if inv.curr_voltage > target_voltage:
+                #     # charging
+                #     max_feed = max(pwm.base_load, pwm.total_load - 10)
+                #     min_feed = max(self.last_output - 10, pwm.base_load, 20)
+                # else:
+                #     # discharging
+                #     max_feed = max(self.last_output - 10, pwm.base_load,
+                #         pwm.total_load - 10)
+                #     min_feed = min(pwm.base_load, 20.0)
+
                 if self.pid.setpoint != target_voltage:
                     self.pid.setpoint = round(target_voltage, 1)
                     log.info("new pid.setpoint = %.1f" % self.pid.setpoint)
