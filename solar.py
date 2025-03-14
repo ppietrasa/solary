@@ -772,16 +772,18 @@ class PowerOperator(mqtt.Client):
             if self.pid.auto_mode:
                 # keep the PID output within this range:
                 max_feed = max(pwm.base_load, pwm.total_load - 10)
+                max_feed = min(max_feed, inv.max_power)
                 min_feed = min(pwm.base_load, 10.0)
+                assert min_feed < max_feed, "%s < %s" % (min_feed, max_feed)
 
                 if have_sunlight:
                     log.info("It's a day")
                     target_voltage = round(inv.n_readings_iwma_voltage(500), 1)
                 else:
                     log.info("It's dark")
-                    # we want to discharge to nominal voltage
+                    # we want to discharge to nominal voltage (or below)
                     target_voltage = 25.6
-                    # slowly (to go easy on the battery)
+                    # but slowly (to go easy on the battery)
                     max_feed = max(pwm.base_load, min(45, pwm.total_load))
 
                 # Use knowledge about the controlled process, to further
@@ -795,6 +797,11 @@ class PowerOperator(mqtt.Client):
                     # the lower output limit above the `last_output` (-10 for
                     # tolerance)
                     min_feed = max(self.last_output - 10, min_feed)
+
+                    # yet, watch out not to bump it above max_feed
+                    if min_feed > max_feed:
+                        min_feed = max(max_feed - 10, 10)
+
                 elif inv.curr_voltage < target_voltage:
                     log.info("discharging..")
                     # The `last_output` has obviously been an overshoot ->
@@ -802,10 +809,15 @@ class PowerOperator(mqtt.Client):
                     # for tolerance)
                     max_feed = max(self.last_output + 10, max_feed)
 
+                    # yet, watch out not to lower it below min_feed
+                    if max_feed < min_feed:
+                        max_feed = min(min_feed + 10, inv.max_power)
+
                 log.info("current_voltage: %s" % inv.curr_voltage)
                 log.info("target_voltage : %s" % target_voltage)
                 log.info("min_feed: %s" % min_feed)
                 log.info("max_feed: %s" % max_feed)
+                assert min_feed < max_feed, "%s < %s" % (min_feed, max_feed)
 
                 if self.pid.setpoint != target_voltage:
                     self.pid.setpoint = round(target_voltage, 1)
