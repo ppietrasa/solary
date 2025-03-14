@@ -655,21 +655,18 @@ class PowerOperator(mqtt.Client):
         curr_month = datetime.datetime.now().month
         if 3 <= curr_month < 10:
             #self.summer_program()
-            self.general_program(0.9,
+            self.general_program(
                 InverterOnBattery.SUMMER_LOW_VOLTAGE,
                 InverterOnBattery.SUMMER_HGH_VOLTAGE
                 )
         else:
-            self.general_program(0.9,
+            self.general_program(
                 InverterOnBattery.WINTER_LOW_VOLTAGE,
                 InverterOnBattery.WINTER_LOW_VOLTAGE
                 )
 
-    def general_program(self, sun_factor, low_voltage, high_voltage):
-        """Feed `sun_factor` of consumption during sun hours,
-        shutdown the inverter at `low_voltage` and startup at `high_voltage`.
-        """
-
+    def general_program(self, low_voltage, high_voltage):
+        """The control loop."""
         # shortcuts to ease reading
         inv = self.inverter
         pwm = self.pwmeters
@@ -678,8 +675,8 @@ class PowerOperator(mqtt.Client):
         target_power = self.last_output
 
         # Protective measures. We protect the battery by switching off the
-        # inverter when the battery voltage gets too low. Also, we protect the
-        # inverter itself from overheating, by monitoring its temperature.
+        # inverter when the battery voltage gets too low. We protect the
+        # inverter from overheating when its temperature gets too high.
         if inv.is_on:
             # ~ 18.5% capacity (likely more because discharging)
             if curr_voltage_smoothed < low_voltage:
@@ -714,13 +711,12 @@ class PowerOperator(mqtt.Client):
         assert 12 >= curr_month > 0, "current month is %s" % curr_month
         sun_start = self.sunrise_sunset_times[curr_month]["sunrise"]
         sun_end   = self.sunrise_sunset_times[curr_month]["sunset"]
-        is_day    = sun_start <= now <= sun_end
-        is_night  = not is_day
+        have_sunlight = sun_start <= now <= sun_end
 
         if not self._absorbing and \
                    inv.curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
-                # do not fight the load controler, if it wants to go on with
-                # absorbtion phase
+                # do not fight the load controller, if it wants to go on with
+                # absorption phase
                 log.info("Absorbing..") # we want to discharge slowly
                 self.pid.set_auto_mode(False)
                 self.pid_last_output = self.last_output
@@ -738,7 +734,7 @@ class PowerOperator(mqtt.Client):
 
         if not self._floating and \
                inv.curr_voltage >= (InverterOnBattery.FLOAT_VOLTAGE - 0.1):
-            # do not fight the load controler, if it wants to go on with
+            # do not fight the load controller, if it wants to go on with
             # float phase
             log.info("Floating..") # we want to discharge slowly
             self.pid.set_auto_mode(False)
@@ -774,33 +770,42 @@ class PowerOperator(mqtt.Client):
             log.info("#%s voltage reading:" % self.voltage_reading_num)
 
             if self.pid.auto_mode:
-                log.info("current_voltage: %s" % inv.curr_voltage)
-                target_voltage = 25.6
-                if is_day:
+                # keep the PID output within this range:
+                max_feed = max(pwm.base_load, pwm.total_load - 10)
+                min_feed = min(pwm.base_load, 10.0)
+
+                if have_sunlight:
                     log.info("It's a day")
                     target_voltage = round(inv.n_readings_iwma_voltage(500), 1)
-                    max_feed = max(pwm.base_load, pwm.total_load - 10.0)
-                    min_feed = min(pwm.base_load, 20.0)
                 else:
-                    log.info("It's a night") # we want to discharge slowly
+                    log.info("It's dark")
+                    # we want to discharge to nominal voltage
                     target_voltage = 25.6
+                    # slowly (to go easy on the battery)
                     max_feed = max(pwm.base_load, min(45, pwm.total_load))
-                    min_feed = 10.0
+
+                # Use knowledge about the controlled process, to further
+                # restrict the output range to help the PID
+                # find the right value of the control variable faster (with
+                # less oscillations)
+                if inv.curr_voltage > target_voltage:
+                    log.info("charging..")
+                    # The `last_output` has obviously not been enough to reach
+                    # a stable state (neither charging or discharging) -> bump
+                    # the lower output limit above the `last_output` (-10 for
+                    # tolerance)
+                    min_feed = max(self.last_output - 10, min_feed)
+                elif inv.curr_voltage < target_voltage:
+                    log.info("discharging..")
+                    # The `last_output` has obviously been an overshoot ->
+                    # lower the higher output limit below the `last_output`(+10
+                    # for tolerance)
+                    max_feed = max(self.last_output + 10, max_feed)
 
                 log.info("current_voltage: %s" % inv.curr_voltage)
                 log.info("target_voltage : %s" % target_voltage)
-
-                # Will further resticting pid output range help the PID
-                # controller oscilate less drastically?
-                # if inv.curr_voltage > target_voltage:
-                #     # charging
-                #     max_feed = max(pwm.base_load, pwm.total_load - 10)
-                #     min_feed = max(self.last_output - 10, pwm.base_load, 20)
-                # else:
-                #     # discharging
-                #     max_feed = max(self.last_output - 10, pwm.base_load,
-                #         pwm.total_load - 10)
-                #     min_feed = min(pwm.base_load, 20.0)
+                log.info("min_feed: %s" % min_feed)
+                log.info("max_feed: %s" % max_feed)
 
                 if self.pid.setpoint != target_voltage:
                     self.pid.setpoint = round(target_voltage, 1)
