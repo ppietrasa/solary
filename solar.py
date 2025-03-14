@@ -507,6 +507,9 @@ class PowerOperator(mqtt.Client):
         self.last_output = self.pwmeters.base_load
         self.pid_last_output = self.last_output
 
+        self.last_min_feed = 10
+        self.last_max_feed = self.inverter.max_power
+
         self.voltage_reading_num = 0
 
         #p -235 (oscilates)
@@ -796,8 +799,9 @@ class PowerOperator(mqtt.Client):
                     # a stable state (neither charging or discharging) -> bump
                     # the lower output limit above the `last_output` (-10 for
                     # tolerance)
-                    min_feed = max(self.last_output - 10, min_feed)
-
+                    min_feed = max(self.last_output - 5, min_feed)
+                    # last_max_feed: +10 slowly decay old limits
+                    max_feed = min(self.last_max_feed + 10, max_feed)
                     # yet, watch out not to bump it above max_feed
                     if min_feed > max_feed:
                         min_feed = max(max_feed - 10, 10)
@@ -807,7 +811,9 @@ class PowerOperator(mqtt.Client):
                     # The `last_output` has obviously been an overshoot ->
                     # lower the higher output limit below the `last_output`(+10
                     # for tolerance)
-                    max_feed = max(self.last_output + 10, max_feed)
+                    max_feed = min(self.last_output + 5, max_feed)
+                    # last_min_feed: -10 slowly decay old limits
+                    min_feed = max(self.last_min_feed - 10, min_feed)
 
                     # yet, watch out not to lower it below min_feed
                     if max_feed < min_feed:
@@ -826,6 +832,8 @@ class PowerOperator(mqtt.Client):
                     self.pid.output_limits = (min_feed, max_feed)
                     log.info("new pid.output_limits: [%s, %s]"
                             % (min_feed, max_feed))
+                    self.last_min_feed = min_feed
+                    self.last_max_feed = max_feed
 
                 target_power = self.pid(inv.curr_voltage)
                 log.info("target_power : %s" % target_power)
