@@ -489,6 +489,11 @@ class PowerMeters(object):
             total_load += sensor_power
         return total_load
 
+class PowerAction:
+    DOWN = -1
+    NONE =  0
+    UP   =  1
+
 class PowerOperator(mqtt.Client):
     """Monitors power meters, battery, inverter and adjusts the inverter based
     on monitored inputs."""
@@ -504,8 +509,9 @@ class PowerOperator(mqtt.Client):
         self._absorbing = False
         self._floating  = False
 
-        self.last_output = self.pwmeters.base_load
-        self.pid_last_output = self.last_output
+        self.last_output = self.inverter.power_limit
+        self.last_action = PowerAction.NONE
+        self.tune_unit   = 19
 
         self.last_min_feed = 10
         self.last_max_feed = self.inverter.max_power
@@ -514,12 +520,6 @@ class PowerOperator(mqtt.Client):
 
         #p -235 (oscilates)
         #p -175 (oscilates)
-
-        self.pid = PID(-128.0, -5, 6, setpoint=25.6,
-                proportional_on_measurement=False,
-                differential_on_measurement=False)
-        self.pid_sample_time = 5
-        self.pid.output_limits = (10, inverter.max_power)
 
         # runrise/sunset times per month of year
         self.sunrise_sunset_times = {
@@ -639,6 +639,15 @@ class PowerOperator(mqtt.Client):
             self._initialized = True
             self.log("Initialized!")
 
+
+    def set_power(self, target_power):
+        if target_power != self.inverter.power_limit:
+            log.info("Adjusting target power from %s W to %s W"
+                % (self.inverter.power_limit, target_power))
+            self.inverter.power_limit = target_power
+            self.last_output = target_power
+
+
     def process(self):
 
         with open("solar.stats", "w") as stats_f:
@@ -686,15 +695,11 @@ class PowerOperator(mqtt.Client):
                 self.log("Battery low (%.2f V), about to power off.."
                     % curr_voltage_smoothed)
                 inv.power_off()
-                self.pid.set_auto_mode(False)
-                self.pid_last_output = self.last_output
                 return
             elif inv.temperature > InverterOnBattery.HGH_TEMPERATURE:
                 self.log("Temperature (%s°C) too high, about to power off.."
                     % inv.temperature)
                 inv.power_off()
-                self.pid.set_auto_mode(False)
-                self.pid_last_output = self.last_output
                 return
             else:
                 pass
@@ -705,7 +710,6 @@ class PowerOperator(mqtt.Client):
                     " (%s°C) to power on.."
                     % (curr_voltage_smoothed, inv.temperature))
                 inv.power_on()
-                self.pid.set_auto_mode(True, self.pid_last_output)
 
 
         now = datetime.datetime.now().time()
@@ -721,8 +725,6 @@ class PowerOperator(mqtt.Client):
                 # do not fight the load controller, if it wants to go on with
                 # absorption phase
                 log.info("Absorbing..") # we want to discharge slowly
-                self.pid.set_auto_mode(False)
-                self.pid_last_output = self.last_output
                 self._timer.restart()
                 self._absorbing = True
         elif self._absorbing and not self._timer.expired:
@@ -732,7 +734,6 @@ class PowerOperator(mqtt.Client):
             # Maybe the voltage dropped already below the ABS_VOLTAGE.
             # We'll recheck on next run.
             self._absorbing = False
-            self.pid.set_auto_mode(True, self.pid_last_output)
             return
 
         if not self._floating and \
@@ -740,8 +741,6 @@ class PowerOperator(mqtt.Client):
             # do not fight the load controller, if it wants to go on with
             # float phase
             log.info("Floating..") # we want to discharge slowly
-            self.pid.set_auto_mode(False)
-            self.pid_last_output = self.last_output
             self._timer.restart()
             self._floating = True
         elif self._floating and not self._timer.expired:
@@ -751,7 +750,6 @@ class PowerOperator(mqtt.Client):
             # Maybe the voltage dropped already below the FLOAT_VOLTAGE.
             # We'll recheck on next run.
             self._floating = False
-            self.pid.set_auto_mode(True, self.pid_last_output)
             return
 
         # Floating and aborting are impossible at the same time
@@ -764,92 +762,85 @@ class PowerOperator(mqtt.Client):
             # Generally we keep the last output power. However, we should
             # keep watch if the load drops, we better drop too.
             target_power = min(self.last_output, pwm.total_load)
+            self.set_power(target_power)
+            return
+
         if self._floating:
             target_power = max(pwm.base_load, pwm.total_load - 10)
+            self.set_power(target_power)
+            return
 
         if self.voltage_reading_num != inv.voltage_reading_num:
             # we've got new reading which we react to
             self.voltage_reading_num = inv.voltage_reading_num
             log.info("#%s voltage reading:" % self.voltage_reading_num)
 
-            if self.pid.auto_mode:
-                # keep the PID output within this range:
-                max_feed = max(pwm.base_load, pwm.total_load - 10)
-                max_feed = min(max_feed, inv.max_power)
-                min_feed = min(pwm.base_load, 10.0)
-                assert min_feed < max_feed, "%s < %s" % (min_feed, max_feed)
+            # keep the output power within this range:
+            max_feed = max(pwm.base_load, pwm.total_load - 10)
+            max_feed = min(max_feed, inv.max_power)
+            min_feed = min(pwm.base_load, 10.0)
+            assert min_feed < max_feed, "%s < %s" % (min_feed, max_feed)
 
-                if have_sunlight:
-                    log.info("It's a day")
-                    target_voltage = round(inv.n_readings_iwma_voltage(500), 1)
-                else:
-                    log.info("It's dark")
-                    # we want to discharge to nominal voltage (or below)
-                    target_voltage = 25.6
-                    # but slowly (to go easy on the battery)
-                    max_feed = max(pwm.base_load, min(45, pwm.total_load))
+            if have_sunlight:
+                log.info("It's a day")
+                target_voltage = round(inv.n_readings_iwma_voltage(500), 1)
+            else:
+                log.info("It's dark")
+                # we want to discharge to nominal voltage (or below)
+                target_voltage = 25.6
+                # ..but slowly to go easy on the battery
+                max_feed = max(pwm.base_load, min(45, pwm.total_load))
 
-                # Use knowledge about the controlled process, to further
-                # restrict the output range to help the PID
-                # find the right value of the control variable faster (with
-                # less oscillations)
-                if inv.curr_voltage > target_voltage:
-                    log.info("charging..")
-                    # The `last_output` has obviously not been enough to reach
-                    # a stable state (neither charging or discharging) -> bump
-                    # the lower output limit above the `last_output` (-10 for
-                    # tolerance)
-                    min_feed = max(self.last_output - 5, min_feed)
-                    # last_max_feed: +10 slowly decay old limits
-                    max_feed = min(self.last_max_feed + 10, max_feed)
-                    # yet, watch out not to bump it above max_feed
-                    if min_feed > max_feed:
-                        min_feed = max(max_feed - 10, 10)
+            if inv.curr_voltage > target_voltage:
+                if self.last_action == PowerAction.DOWN:
+                    # overshoot from below
+                    self.tune_unit = int(round(self.tune_unit / 2))
+                elif self.last_action == PowerAction.UP:
+                    # undershoot from above
+                    self.tune_unit = int(round(self.tune_unit * 1.5))
 
-                elif inv.curr_voltage < target_voltage:
-                    log.info("discharging..")
-                    # The `last_output` has obviously been an overshoot ->
-                    # lower the higher output limit below the `last_output`(+10
-                    # for tolerance)
-                    max_feed = min(self.last_output + 5, max_feed)
-                    # last_min_feed: -10 slowly decay old limits
-                    min_feed = max(self.last_min_feed - 10, min_feed)
+                self.last_action = PowerAction.UP
+                target_power = min(inv.power_limit + self.tune_unit,
+                        max_feed)
+                log.info("target_power = min(%s + %s, %s)" %
+                        (inv.power_limit, self.tune_unit, max_feed))
 
-                    # yet, watch out not to lower it below min_feed
-                    if max_feed < min_feed:
-                        max_feed = min(min_feed + 10, inv.max_power)
+            elif inv.curr_voltage < target_voltage:
+                if self.last_action == PowerAction.UP:
+                    # undershoot from above
+                    self.tune_unit = int(round(self.tune_unit / 2))
+                elif self.last_action == PowerAction.DOWN:
+                    # overshoot from below
+                    self.tune_unit = int(round(self.tune_unit * 1.5))
 
-                log.info("current_voltage: %s" % inv.curr_voltage)
-                log.info("target_voltage : %s" % target_voltage)
-                log.info("min_feed: %s" % min_feed)
-                log.info("max_feed: %s" % max_feed)
-                assert min_feed < max_feed, "%s < %s" % (min_feed, max_feed)
+                self.last_action = PowerAction.DOWN
+                target_power = max(inv.power_limit - self.tune_unit,
+                        min_feed)
+                log.info("target_power = max(%s - %s, %s)" %
+                        (inv.power_limit, self.tune_unit, min_feed))
 
-                if self.pid.setpoint != target_voltage:
-                    self.pid.setpoint = round(target_voltage, 1)
-                    log.info("new pid.setpoint = %.1f" % self.pid.setpoint)
-                if self.pid.output_limits != (min_feed, max_feed):
-                    self.pid.output_limits = (min_feed, max_feed)
-                    log.info("new pid.output_limits: [%s, %s]"
-                            % (min_feed, max_feed))
-                    self.last_min_feed = min_feed
-                    self.last_max_feed = max_feed
+            else:
+                self.last_action = PowerAction.NONE
+                # reset tune unit, good or bad idea?? hmm...
+                self.tune_unit = 19
 
-                target_power = self.pid(inv.curr_voltage)
-                log.info("target_power : %s" % target_power)
-                p, i, d = self.pid.components
-                log.debug("%.1f -> %.3f(%.3f, %3f, %3f)" %  (inv.curr_voltage,
-                    target_power, p, i, d))
-                target_power = int(round(target_power))
-                log.info("pid_csv: %.1f, %.1f, %d, %d, %d, %d" % (
-                    self.pid.setpoint, inv.curr_voltage, target_power,
-                    inv.power_limit, min_feed, max_feed))
+            self.tune_unit = max(2, self.tune_unit)
+            self.tune_unit = min(40, self.tune_unit)
 
-        if target_power != inv.power_limit:
-            log.info("Adjusting target power from %s W to %s W"
-                % (inv.power_limit, target_power))
-            inv.power_limit = target_power
-            self.last_output = target_power
+            target_power = max(min(target_power, max_feed), min_feed)
+
+            assert(self.tune_unit >= 0)
+            assert(target_power >= min_feed)
+            assert(target_power <= max_feed)
+
+            log.info("target_power : %s" % target_power)
+            log.info("tune_unit    : %s" % self.tune_unit)
+            target_power = int(round(target_power))
+            log.info("cl_csv: %.1f, %.1f, %d, %d, %d, %d, %d" % (
+                target_voltage, inv.curr_voltage, target_power,
+                inv.power_limit, min_feed, max_feed, self.tune_unit))
+            self.set_power(target_power)
+
 
 def main():
     arg_parser = argparse.ArgumentParser(
