@@ -735,6 +735,13 @@ class PowerOperator(mqtt.Client):
             # We'll recheck on next run.
             self._absorbing = False
             return
+        if self._absorbing:
+            assert(self._floating == False)
+            # Generally we keep the last output power. However, we should
+            # keep watch if the load drops, we better drop too.
+            target_power = min(self.last_output, pwm.total_load)
+            self.set_power(target_power)
+            return
 
         if not self._floating and \
                inv.curr_voltage >= (InverterOnBattery.FLOAT_VOLTAGE - 0.1):
@@ -751,24 +758,12 @@ class PowerOperator(mqtt.Client):
             # We'll recheck on next run.
             self._floating = False
             return
-
-        # Floating and aborting are impossible at the same time
-        if self._absorbing:
-            assert(self._floating == False)
         if self._floating:
             assert(self._absorbing == False)
-
-        if self._absorbing:
-            # Generally we keep the last output power. However, we should
-            # keep watch if the load drops, we better drop too.
-            target_power = min(self.last_output, pwm.total_load)
-            self.set_power(target_power)
-            return
-
-        if self._floating:
             target_power = max(pwm.base_load, pwm.total_load - 10)
             self.set_power(target_power)
             return
+
 
         if self.voltage_reading_num != inv.voltage_reading_num:
             # we've got new reading which we react to
