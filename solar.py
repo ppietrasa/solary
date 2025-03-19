@@ -781,19 +781,24 @@ class PowerOperator(mqtt.Client):
                 target_voltage = round(inv.n_readings_iwma_voltage(500), 1)
             else:
                 log.info("It's dark")
-                # we want to discharge to nominal voltage (or below)
-                target_voltage = 25.6
-                # ..but slowly to go easy on the battery
-                max_feed = max(pwm.base_load, min(45, pwm.total_load))
+                if False: # if winter
+                    # we want to discharge to nominal voltage (or below)
+                    target_voltage = 25.6
+                    # ..but slowly to go easy on the battery
+                    max_feed = max(pwm.base_load, min(45, pwm.total_load))
+                else:
+                    # if summer
+                    target_voltage = 24.7
+                    # ..but slowly to go easy on the battery
+                    max_feed = max(pwm.base_load, min(75, pwm.total_load))
 
             if inv.curr_voltage > target_voltage:
                 if self.last_action == PowerAction.DOWN:
                     # overshoot from below
-                    self.tune_unit = int(round(self.tune_unit / 2))
+                    self.tune_unit = max(2, int(round(self.tune_unit / 1.5)))
                 elif self.last_action == PowerAction.UP:
                     # undershoot from above
-                    self.tune_unit = int(round(self.tune_unit * 1.5))
-
+                    self.tune_unit = min(40, int(round(self.tune_unit * 1.75)))
                 self.last_action = PowerAction.UP
                 target_power = min(inv.power_limit + self.tune_unit,
                         max_feed)
@@ -803,11 +808,10 @@ class PowerOperator(mqtt.Client):
             elif inv.curr_voltage < target_voltage:
                 if self.last_action == PowerAction.UP:
                     # undershoot from above
-                    self.tune_unit = int(round(self.tune_unit / 2))
+                    self.tune_unit = max(2, int(round(self.tune_unit / 2.25)))
                 elif self.last_action == PowerAction.DOWN:
                     # overshoot from below
-                    self.tune_unit = int(round(self.tune_unit * 1.5))
-
+                    self.tune_unit = min(40, int(round(self.tune_unit * 1.25)))
                 self.last_action = PowerAction.DOWN
                 target_power = max(inv.power_limit - self.tune_unit,
                         min_feed)
@@ -817,10 +821,8 @@ class PowerOperator(mqtt.Client):
             else:
                 self.last_action = PowerAction.NONE
                 # reset tune unit, good or bad idea?? hmm...
-                self.tune_unit = 19
+                # self.tune_unit = 19
 
-            self.tune_unit = max(2, self.tune_unit)
-            self.tune_unit = min(40, self.tune_unit)
 
             target_power = max(min(target_power, max_feed), min_feed)
 
