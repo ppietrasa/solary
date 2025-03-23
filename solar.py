@@ -427,7 +427,9 @@ class PowerMeters(object):
     TOPICS = [
         'tele/office/SENSOR',
         'tele/tv/SENSOR',
-        'tele/fridge/SENSOR'
+        'tele/fridge/SENSOR',
+        'tele/vac/SENSOR',
+        'tele/enigma/SENSOR',
         ]
 
     def __init__(self, base_load = 27):
