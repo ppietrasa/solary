@@ -722,8 +722,9 @@ class PowerOperator(mqtt.Client):
         sun_end   = self.sunrise_sunset_times[curr_month]["sunset"]
         have_sunlight = sun_start <= now <= sun_end
 
-        if not self._absorbing and \
-                   inv.curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
+        if not self._floating and \
+               not self._absorbing and \
+               inv.curr_voltage >= (InverterOnBattery.ABS_VOLTAGE - 0.1):
                 # do not fight the load controller, if it wants to go on with
                 # absorption phase
                 log.info("Absorbing..") # we want to discharge slowly
@@ -745,7 +746,8 @@ class PowerOperator(mqtt.Client):
             self.set_power(target_power)
             return
 
-        if not self._floating and \
+        if not self._absorbing and \
+               not self._floating and \
                inv.curr_voltage >= (InverterOnBattery.FLOAT_VOLTAGE - 0.1):
             # do not fight the load controller, if it wants to go on with
             # float phase
