@@ -496,11 +496,34 @@ class PowerAction:
     NONE =  0
     UP   =  1
 
+class PowerOperatorAlg:
+    LimitBySunAndUsage = 1
+    LimitBySunOnly     = 2
+    LimitByUsageOnly   = 3
+    FullPower          = 4
+    Off                = 0
+
+    @staticmethod
+    def str(algenum):
+        if algenum == PowerOperatorAlg.LimitBySunAndUsage:
+            return 'LimitBySunAndUsage'
+        if algenum == PowerOperatorAlg.LimitBySunOnly:
+            return 'LimitBySunOnly'
+        if algenum == PowerOperatorAlg.LimitByUsageOnly:
+            return 'LimitByUsageOnly'
+        if algenum == PowerOperatorAlg.FullPower:
+            return 'FullPower'
+        if algenum == PowerOperatorAlg.Off:
+            return 'Off'
+        return 'IllegalAlgValue'
+
+
 class PowerOperator(mqtt.Client):
     """Monitors power meters, battery, inverter and adjusts the inverter based
     on monitored inputs."""
     def __init__(self, inverter, pwmeters):
         super(PowerOperator, self).__init__("solar@%s" % BROKER)
+        self.curr_alg = PowerOperatorAlg.LimitBySunAndUsage
         self.inverter = inverter
         self.pwmeters = pwmeters
         # we are a friend of inverter, which sends out commands on our behalf
@@ -573,11 +596,28 @@ class PowerOperator(mqtt.Client):
         log.debug(msg.topic+" "+str(msg.payload))
         pwmeters_udpated = self.pwmeters.update(msg.topic, msg.payload)
         inverter_updated = self.inverter.update(msg.topic, msg.payload)
+        operator_updated = self.update(msg.topic, msg.payload)
         if not self._initialized:
             self.initialize()
+            time.sleep(3)
             return
-        if pwmeters_udpated or inverter_updated:
+        if pwmeters_udpated or inverter_updated or operator_updated:
             self.process()
+
+    def update(self, topic, payload):
+        """Updates the current state of the operator. Returns True if the state
+        changed since previous update."""
+        log.debug("%s: %s" % (topic, payload))
+        if topic == "operator/setalg":
+            try:
+                v = int(payload)
+                if v < 0 or v > PowerOperatorAlg.FullPower:
+                    raise ValueError("illegal value (%s)" % v)
+                self.curr_alg = v
+                log.info("Operator alg set to %s" % PowerOperatorAlg.str(v))
+            except ValueError as v:
+                log.info("failed to process 'operator/setalg' command (%s)" % v)
+        return True
 
     def on_pre_connect(*args):
         """This seems to be needed due to a bug in paho-1-6-1"""
@@ -594,6 +634,7 @@ class PowerOperator(mqtt.Client):
             client.subscribe(topic)
         for topic in self.pwmeters.topics:
             client.subscribe(topic)
+        client.subscribe("operator/setalg")
 
     def dump_stats(self, stats_f = sys.stdout):
         """Dump statistics to a file `solar.stats`."""
@@ -688,6 +729,7 @@ class PowerOperator(mqtt.Client):
         curr_voltage_smoothed = inv.n_readings_sma_voltage(7)
         target_power = self.last_output
 
+
         # Protective measures. We protect the battery by switching off the
         # inverter when the battery voltage gets too low. We protect the
         # inverter from overheating when its temperature gets too high.
@@ -713,6 +755,19 @@ class PowerOperator(mqtt.Client):
                     % (curr_voltage_smoothed, inv.temperature))
                 inv.power_on()
 
+
+        if self.curr_alg == PowerOperatorAlg.Off:
+            if inv.is_on:
+                inv.power_off()
+            return
+        if self.curr_alg == PowerOperatorAlg.FullPower:
+            target_power = inv.max_power
+            self.set_power(target_power)
+            return
+        if self.curr_alg == PowerOperatorAlg.LimitByUsageOnly:
+            target_power = max(pwm.base_load, pwm.total_load - 10)
+            self.set_power(target_power)
+            return
 
         now = datetime.datetime.now().time()
         curr_month = datetime.datetime.now().month
@@ -795,6 +850,10 @@ class PowerOperator(mqtt.Client):
                     target_voltage = 24.7
                     # ..but slowly to go easy on the battery
                     max_feed = max(pwm.base_load, min(75, pwm.total_load))
+
+            if self.curr_alg == PowerOperatorAlg.LimitBySunOnly:
+                max_feed = inv.max_power
+
 
             if inv.curr_voltage > target_voltage:
                 if self.last_action == PowerAction.DOWN:
