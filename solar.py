@@ -533,6 +533,7 @@ class PowerOperator(mqtt.Client):
         self._timer = Timer(3 * 60)
         self._absorbing = False
         self._floating  = False
+        self.explicitly_turned_off = False
 
         self.last_output = self.inverter.power_limit
         self.last_action = PowerAction.NONE
@@ -608,7 +609,7 @@ class PowerOperator(mqtt.Client):
         """Updates the current state of the operator. Returns True if the state
         changed since previous update."""
         log.debug("%s: %s" % (topic, payload))
-        if topic == "operator/setalg":
+        if topic == "operator/cmd/setalg":
             try:
                 v = int(payload)
                 if v < 0 or v > PowerOperatorAlg.FullPower:
@@ -617,6 +618,9 @@ class PowerOperator(mqtt.Client):
                 log.info("Operator alg set to %s" % PowerOperatorAlg.str(v))
             except ValueError as v:
                 log.info("failed to process 'operator/setalg' command (%s)" % v)
+        elif topic == "operator/cmd/getalg":
+            log.info("publishing operator/alg: %s" % self.curr_alg)
+            self.publish("operator/status/alg", self.curr_alg)
         return True
 
     def on_pre_connect(*args):
@@ -634,7 +638,8 @@ class PowerOperator(mqtt.Client):
             client.subscribe(topic)
         for topic in self.pwmeters.topics:
             client.subscribe(topic)
-        client.subscribe("operator/setalg")
+        client.subscribe("operator/cmd/#")
+        self.publish("operator/status/alg", self.curr_alg)
 
     def dump_stats(self, stats_f = sys.stdout):
         """Dump statistics to a file `solar.stats`."""
@@ -757,9 +762,16 @@ class PowerOperator(mqtt.Client):
 
 
         if self.curr_alg == PowerOperatorAlg.Off:
+            self.explicitly_turned_off = True
             if inv.is_on:
                 inv.power_off()
             return
+        if self.explicitly_turned_off:
+            assert(self.curr_alg != PowerOperatorAlg.Off)
+            self.explicitly_turned_off = False
+            if inv.is_off:
+                inv.power_on()
+
         if self.curr_alg == PowerOperatorAlg.FullPower:
             target_power = inv.max_power
             self.set_power(target_power)
