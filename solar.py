@@ -2,7 +2,6 @@
 import paho.mqtt.client as mqtt
 import time, copy, json, argparse, logging, logging.handlers, sys, math
 import collections, io, datetime
-from simple_pid import PID
 
 VERSION='0.0.1'
 BROKER='localhost'
