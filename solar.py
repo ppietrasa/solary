@@ -522,6 +522,7 @@ class PowerOperator(mqtt.Client):
     on monitored inputs."""
     def __init__(self, inverter, pwmeters):
         super(PowerOperator, self).__init__("solar@%s" % BROKER)
+        self.is_connected = False
         self.curr_alg = PowerOperatorAlg.LimitBySunAndUsage
         self.inverter = inverter
         self.pwmeters = pwmeters
@@ -630,7 +631,8 @@ class PowerOperator(mqtt.Client):
     # server.
     def on_connect(self, client, userdata, flags, rc):
         assert client == self, "on_connect: unexpected client"
-        print("Connected with result code "+str(rc))
+        log.info("Connected with result code "+str(rc))
+        self.is_connected = True
         # Subscribing in on_connect() means that if we lose the connection and
         # reconnect then subscriptions will be renewed.
         for topic in self.inverter.topics:
@@ -639,6 +641,11 @@ class PowerOperator(mqtt.Client):
             client.subscribe(topic)
         client.subscribe("operator/cmd/#")
         self.publish("operator/status/alg", self.curr_alg)
+
+    def on_disconnect(self, client, userdata, rc):
+        assert client == self, "on_connect: unexpected client"
+        log.info("Disconnected with result code "+str(rc))
+        self.is_connected = False
 
     def dump_stats(self, stats_f = sys.stdout):
         """Dump statistics to a file `solar.stats`."""
@@ -951,11 +958,17 @@ def main():
         pwmeters = PowerMeters(base_load = 27)
         operator = PowerOperator(inverter, pwmeters)
 
-        operator.connect(BROKER, BROKER_PORT, 60)
         while True:
-            # Blocking call that processes network traffic, dispatches
-            # callbacks and handles reconnecting.
-            operator.loop()
+            operator.connect(BROKER, BROKER_PORT, 90)
+            operator.is_connected = True
+            while True:
+                # Blocking call that processes network traffic, dispatches
+                # callbacks and supposably handles reconnecting. I am not so
+                # sure about reconnecting.. hence own handling for now
+                operator.loop()
+                if not operator.is_connected:
+                    log.info("about to reconnect..")
+                    break
 
     except KeyboardInterrupt:
         print("Interrupted!")
