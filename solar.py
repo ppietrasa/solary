@@ -746,7 +746,13 @@ class PowerOperator(mqtt.Client):
         # inverter from overheating when its temperature gets too high.
         if inv.is_on:
             # ~ 18.5% capacity (likely more because discharging)
-            if curr_voltage_smoothed < low_voltage:
+            if ( self.curr_alg == PowerOperatorAlg.FullPower
+                 and curr_voltage_smoothed < 23.4):
+                self.log("Battery low (%.2f V) while outputing at full-power,"
+                    " about to power off.." % curr_voltage_smoothed)
+                inv.power_off()
+                return
+            elif curr_voltage_smoothed < low_voltage:
                 self.log("Battery low (%.2f V), about to power off.."
                     % curr_voltage_smoothed)
                 inv.power_off()
