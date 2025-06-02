@@ -429,6 +429,7 @@ class PowerMeters(object):
         'tele/fridge/SENSOR',
         'tele/vac/SENSOR',
         'tele/enigma/SENSOR',
+        'tele/franek/SENSOR',
         ]
 
     def __init__(self, base_load = 27):
