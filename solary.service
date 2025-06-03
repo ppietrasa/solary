@@ -1,0 +1,14 @@
+[Unit]
+Description=A supervisor for Piotr's solar system
+After=multi-user.target
+
+[Service]
+Type=simple
+Restart=always
+ExecStart=/usr/bin/python3 /home/piotr/solary/solar.py
+WorkingDirectory=/home/piotr/solary
+User=piotr
+Group=piotr
+
+[Install]
+WantedBy=multi-user.target
