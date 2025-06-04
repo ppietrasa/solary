@@ -5,7 +5,7 @@ After=multi-user.target
 [Service]
 Type=simple
 Restart=always
-ExecStart=/usr/bin/python3 /home/piotr/solary/solar.py
+ExecStart=/usr/bin/python3 /home/piotr/solary/solar.py --verbose
 WorkingDirectory=/home/piotr/solary
 User=piotr
 Group=piotr
