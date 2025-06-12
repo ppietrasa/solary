@@ -741,6 +741,16 @@ class PowerOperator(mqtt.Client):
         curr_voltage_smoothed = inv.n_readings_sma_voltage(7)
         target_power = self.last_output
 
+        if self.curr_alg == PowerOperatorAlg.Off:
+            self.explicitly_turned_off = True
+            if inv.is_on:
+                inv.power_off()
+            return
+        if self.explicitly_turned_off:
+            assert(self.curr_alg != PowerOperatorAlg.Off)
+            self.explicitly_turned_off = False
+            if inv.is_off:
+                inv.power_on()
 
         # Protective measures. We protect the battery by switching off the
         # inverter when the battery voltage gets too low. We protect the
@@ -774,16 +784,6 @@ class PowerOperator(mqtt.Client):
                 inv.power_on()
 
 
-        if self.curr_alg == PowerOperatorAlg.Off:
-            self.explicitly_turned_off = True
-            if inv.is_on:
-                inv.power_off()
-            return
-        if self.explicitly_turned_off:
-            assert(self.curr_alg != PowerOperatorAlg.Off)
-            self.explicitly_turned_off = False
-            if inv.is_off:
-                inv.power_on()
 
         if self.curr_alg == PowerOperatorAlg.FullPower:
             target_power = inv.max_power
