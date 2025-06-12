@@ -878,6 +878,9 @@ class PowerOperator(mqtt.Client):
 
             if self.curr_alg == PowerOperatorAlg.LimitBySunOnly:
                 max_feed = inv.max_power
+                if not have_sunlight:
+                    log.info("It's dark")
+                    max_feed = 75
 
 
             if inv.curr_voltage > target_voltage:
