@@ -99,7 +99,7 @@ class InverterOnBattery(object):
     WINTER_HGH_VOLTAGE = 26.7
     ABS_VOLTAGE = 28.4
     FLOAT_VOLTAGE = 27.2
-    HGH_TEMPERATURE = 50
+    HGH_TEMPERATURE = 75
 
     def __init__(self, serial, bat_capacity=1280, base_topic='solar/'):
         """
