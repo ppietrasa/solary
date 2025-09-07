@@ -916,10 +916,22 @@ class PowerOperator(mqtt.Client):
 
 
             target_power = max(min(target_power, max_feed), min_feed)
-
             assert(self.tune_unit >= 0)
             assert(target_power >= min_feed)
             assert(target_power <= max_feed)
+            if have_sunlight and target_power < 45:
+                # Feeding little power, like e.g. 27W or so, when absorbing or
+                # floating results in oscillating battery voltage which is ugly
+                # in itself. However while oscillating the voltage often
+                # exceeds the one allowed by the battery spec. of 29V (as
+                # measured by the charge controller and battery protect). The
+                # situation is difficult to spot by looking at the inverter
+                # readings. The voltage reported by the inverter is generally
+                # lower. Still the battery's BMS sporadically switches off the
+                # battery in response. So lets not risk feeding less then 45W
+                # during a daylight.
+                log.info("Forcing target power to 0")
+                target_power = 0
 
             log.info("target_power : %s" % target_power)
             log.info("tune_unit    : %s" % self.tune_unit)
