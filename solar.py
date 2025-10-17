@@ -222,14 +222,9 @@ class InverterOnBattery(object):
 
     def n_readings_gma_voltage(self, n):
         """Geometrical voltage mean over `n` observations"""
-        assert(n >= 1)
-        v_prod = 1; k = 0
-        for (k, v) in enumerate(reversed(self._voltage_queue)):
-            if k < n:
-                v_prod *= v
-            else:
-                break
-        return (v_prod ** (1/min(k+1,n)))
+        import statistics, itertools
+        n_readings_iter = itertools.islice(reversed(self._voltage_queue), n)
+        return statistics.geometric_mean(n_readings_iter)
 
     @property
     def gma_voltage(self):
