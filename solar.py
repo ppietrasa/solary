@@ -95,8 +95,7 @@ class InverterOnBattery(object):
 
     SUMMER_LOW_VOLTAGE = 24.5
     SUMMER_HGH_VOLTAGE = 25.9
-    WINTER_LOW_VOLTAGE = 25.8
-    #WINTER_LOW_VOLTAGE = 25.6
+    WINTER_LOW_VOLTAGE = 25.6
     WINTER_HGH_VOLTAGE = 26.7
     ABS_VOLTAGE = 28.4
     FLOAT_VOLTAGE = 27.2
@@ -691,24 +690,22 @@ class PowerOperator(mqtt.Client):
             self.inverter.restart()
             self.prev_date = curr_date
 
-        curr_month = datetime.datetime.now().month
-        if 3 <= curr_month < 10:
-            #self.summer_program()
-            self.general_program(
-                InverterOnBattery.SUMMER_LOW_VOLTAGE,
-                InverterOnBattery.SUMMER_HGH_VOLTAGE
-                )
-        else:
-            self.general_program(
-                InverterOnBattery.WINTER_LOW_VOLTAGE,
-                InverterOnBattery.WINTER_LOW_VOLTAGE
-                )
+        self.general_program()
 
-    def general_program(self, low_voltage, high_voltage):
+    def general_program(self):
         """The control loop."""
         # shortcuts to ease reading
         inv = self.inverter
         pwm = self.pwmeters
+
+        curr_month = datetime.datetime.now().month
+        is_summer = 3 <= curr_month < 10
+        if is_summer:
+            low_voltage  = InverterOnBattery.SUMMER_LOW_VOLTAGE
+            high_voltage = InverterOnBattery.SUMMER_HGH_VOLTAGE
+        else:
+            low_voltage  = InverterOnBattery.WINTER_LOW_VOLTAGE
+            high_voltage = InverterOnBattery.WINTER_HGH_VOLTAGE
 
         curr_voltage_smoothed = inv.n_readings_gma_voltage(7)
         target_power = self.last_output
@@ -767,7 +764,6 @@ class PowerOperator(mqtt.Client):
             return
 
         now = datetime.datetime.now().time()
-        curr_month = datetime.datetime.now().month
 
         assert 12 >= curr_month > 0, "current month is %s" % curr_month
         sun_start = self.sunrise_sunset_times[curr_month]["sunrise"]
@@ -837,16 +833,15 @@ class PowerOperator(mqtt.Client):
                 target_voltage = round(inv.n_readings_gma_voltage(500), 1)
             else:
                 log.info("It's dark")
-                if False: # if winter
-                    # we want to discharge to nominal voltage (or below)
-                    target_voltage = 25.6
-                    # ..but slowly to go easy on the battery
-                    max_feed = max(pwm.base_load, min(45, pwm.total_load))
-                else:
-                    # if summer
+                if is_summer:
                     target_voltage = 24.7
                     # ..but slowly to go easy on the battery
                     max_feed = max(pwm.base_load, min(75, pwm.total_load))
+                else: # winter
+                    # we want to discharge to nominal voltage (or below)
+                    target_voltage = 25.8
+                    # ..but slowly to go easy on the battery
+                    max_feed = max(pwm.base_load, min(45, pwm.total_load))
 
             if self.curr_alg == PowerOperatorAlg.LimitBySunOnly:
                 max_feed = inv.max_power
