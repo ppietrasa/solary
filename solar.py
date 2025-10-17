@@ -209,36 +209,6 @@ class InverterOnBattery(object):
         """Current voltage of the battery."""
         return float(self._voltage_queue[-1])
 
-    #def n_readings_sma_voltage(self, n):
-    #    """Average voltage over `n` observations"""
-    #    voltages = list(self._voltage_queue)
-    #    my_n = min(len(voltages), n)
-    #    return float(sum(voltages[-my_n:]) / my_n)
-
-    def n_readings_sma_voltage(self, n):
-        """Average voltage over `n` observations"""
-        numerator = 0; denominator = 0;
-        reversed_q = reversed(self._voltage_queue)
-        for (k, v) in enumerate(reversed_q):
-            if k < n:
-                numerator   += v
-                denominator += 1
-            else:
-                break
-        return numerator/max(1, denominator)
-
-
-    def n_readings_wma_voltage(self, n):
-        """Average voltage over `n` observations"""
-        numerator = 0; denominator = 0
-        for (k, v) in enumerate(reversed(self._voltage_queue)):
-            if k < n:
-                numerator   += (n-k)*v
-                denominator += (n-k)
-            else:
-                break
-        return numerator/max(1, denominator)
-
     def n_readings_iwma_voltage(self, n):
         """Inverse weight moving avarage of voltage over `n` observations"""
         numerator = 0; denominator = 0
@@ -250,15 +220,21 @@ class InverterOnBattery(object):
                 break
         return numerator/max(1, denominator)
 
-    @property
-    def sma_voltage(self):
-        """Average voltage over the last few observations (up to 18 currently)"""
-        return float(sum(self._voltage_queue) / len(self._voltage_queue))
+    def n_readings_gma_voltage(self, n):
+        """Geometrical voltage mean over `n` observations"""
+        assert(n >= 1)
+        v_prod = 1; k = 0
+        for (k, v) in enumerate(reversed(self._voltage_queue)):
+            if k < n:
+                v_prod *= v
+            else:
+                break
+        return (v_prod ** (1/min(k+1,n)))
 
     @property
-    def sma_voltage(self):
-        """Average voltage over the last few observations (up to 18 currently)"""
-        return float(sum(self._voltage_queue) / len(self._voltage_queue))
+    def gma_voltage(self):
+        """Geometrical voltage mean over as many observations as possible."""
+        return self.n_readings_gma_voltage(len(self._voltage_queue))
 
     @property
     def power(self):
@@ -397,7 +373,7 @@ class InverterOnBattery(object):
         table['limit:'] = str(self.power_limit) + ' W'
         table['temperature:'] = str(self.temperature) + '°C'
         table['bat. voltage:'] = "%.1f V" % self.curr_voltage
-        table['bat. sma_voltage:'] = "%.1f V" % self.sma_voltage
+        table['bat. gma_voltage:'] = "%.1f V" % self.gma_voltage
         table['est. bat. capacity:']    = "%.1f Wh" % self.curr_capacity
         table['yield day:'] = "%s Wh" % self.yieldday
         table['yield yesterday:'] = "%s Wh" % self.yieldyesterday
@@ -739,7 +715,7 @@ class PowerOperator(mqtt.Client):
         inv = self.inverter
         pwm = self.pwmeters
 
-        curr_voltage_smoothed = inv.n_readings_sma_voltage(7)
+        curr_voltage_smoothed = inv.n_readings_gma_voltage(7)
         target_power = self.last_output
 
         if self.curr_alg == PowerOperatorAlg.Off:
@@ -863,7 +839,7 @@ class PowerOperator(mqtt.Client):
 
             if have_sunlight:
                 log.info("It's a day")
-                target_voltage = round(inv.n_readings_iwma_voltage(500), 1)
+                target_voltage = round(inv.n_readings_gma_voltage(500), 1)
             else:
                 log.info("It's dark")
                 if False: # if winter
