@@ -219,6 +219,15 @@ class InverterOnBattery(object):
                 break
         return numerator/max(1, denominator)
 
+    def n_readings_iwgma_voltage(self, n):
+        """Inverse weight geometrical mean over `n` observations"""
+        # this one requires `python3-scipy`
+        from scipy.stats import gmean
+        import itertools
+        n_readings = list(reversed(self._voltage_queue))[:n]
+        n_weights  =  list(([(k+1) for (k, v) in enumerate(n_readings)]))
+        return gmean(n_readings, weights=n_weights)
+ 
     def n_readings_gma_voltage(self, n):
         """Geometrical voltage mean over `n` observations"""
         import statistics, itertools
@@ -830,7 +839,7 @@ class PowerOperator(mqtt.Client):
 
             if have_sunlight:
                 log.info("It's a day")
-                target_voltage = round(inv.n_readings_gma_voltage(500), 1)
+                target_voltage = round(inv.n_readings_iwgma_voltage(500), 1)
             else:
                 log.info("It's dark")
                 if is_summer:
