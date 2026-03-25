@@ -93,15 +93,15 @@ class InverterOnBattery(object):
         '/status/limit_absolute',
         ]
 
-    SUMMER_LOW_VOLTAGE = 24.5
-    SUMMER_HGH_VOLTAGE = 25.9
-    WINTER_LOW_VOLTAGE = 25.6
-    WINTER_HGH_VOLTAGE = 26.7
-    ABS_VOLTAGE = 28.4
+    SUMMER_LOW_VOLTAGE = 25.8
+    SUMMER_HGH_VOLTAGE = 26.2
+    WINTER_LOW_VOLTAGE = 26.0
+    WINTER_HGH_VOLTAGE = 26.4
+    ABS_VOLTAGE = 28.6
     FLOAT_VOLTAGE = 27.2
     HGH_TEMPERATURE = 75
 
-    def __init__(self, serial, bat_capacity=1280, base_topic='solar/'):
+    def __init__(self, serial, bat_capacity=2560, base_topic='solar/'):
         """
         Parameters
         ----------
