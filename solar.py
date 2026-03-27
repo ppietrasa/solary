@@ -179,7 +179,7 @@ class InverterOnBattery(object):
         if '/1/voltage' in topic:
             new_voltage = float(payload)
             self._voltage_queue.append(new_voltage)
-            self._load_adjusted_voltage_queue.append(self.curr_voltage)
+            self._load_adjusted_voltage_queue.append(self.load_adjusted_curr_voltage)
             self.voltage_reading_num += 1
 
         return prev_state != self.curr_state
