@@ -101,6 +101,9 @@ class InverterOnBattery(object):
     FLOAT_VOLTAGE = 27.2
     HGH_TEMPERATURE = 75
 
+    VOLTAGE_LOAD_CORRECTION_FACTOR = 0.00377
+
+
     def __init__(self, serial, bat_capacity=2560, base_topic='solar/'):
         """
         Parameters
@@ -137,6 +140,7 @@ class InverterOnBattery(object):
         self.curr_timestamp = int(time.time())
         self.yieldyesterday = 0
         self._voltage_queue = collections.deque([25.6, 25.6], 540)
+        self._load_adjusted_voltage_queue = collections.deque([25.6, 25.6], 540)
         self.voltage_reading_num = 0
         self._off_voltage_queue = collections.deque([24.5, 24.5], 18)
 
@@ -175,9 +179,11 @@ class InverterOnBattery(object):
         if '/1/voltage' in topic:
             new_voltage = float(payload)
             self._voltage_queue.append(new_voltage)
+            self._load_adjusted_voltage_queue.append(self.curr_voltage)
             self.voltage_reading_num += 1
 
         return prev_state != self.curr_state
+
 
     @property
     def is_reachable(self):
@@ -199,14 +205,15 @@ class InverterOnBattery(object):
         return float(self.curr_state.get(self.t_prefix + '/0/temperature', 23))
 
     @property
-    def prev_voltage(self):
-        """Previous voltage of the battery."""
-        return float(self._voltage_queue[-2])
-
-    @property
     def curr_voltage(self):
         """Current voltage of the battery."""
         return float(self._voltage_queue[-1])
+
+    @property
+    def load_adjusted_curr_voltage(self):
+        """Current voltage of the battery adjusted for the load."""
+        return self.curr_voltage \
+            + (InverterOnBattery.VoltageLoadCorrectionFactor * self.power_dc)
 
     def n_readings_iwma_voltage(self, n):
         """Inverse weight moving avarage of voltage over `n` observations"""
@@ -243,6 +250,10 @@ class InverterOnBattery(object):
     def power(self):
         return float(self.curr_state.get(self.t_prefix + '/0/power', 300))
 
+    @property
+    def power_dc(self):
+        return float(self.curr_state.get(self.t_prefix + '/1/power', 150))
+
     @staticmethod
     def interpolate_linear(x, x0, y0, x1, y1):
         return y0 + (x - x0) * (y1 - y0) / (x1 - x0)
@@ -270,12 +281,8 @@ class InverterOnBattery(object):
     @property
     def curr_capacity(self):
         """Current *estimated* power in Watt."""
-        return self.voltage_to_capacity(self.curr_voltage, self.capacity_map)
-
-    @property
-    def prev_capacity(self):
-        """Previous *estimated* power in Watt."""
-        return self.voltage_to_capacity(self.prev_voltage, self.capacity_map)
+        return self.voltage_to_capacity(
+                self.load_adjusted_curr_voltage, self.capacity_map)
 
     @property
     def battery_cycling_power(self):
@@ -376,6 +383,8 @@ class InverterOnBattery(object):
         table['limit:'] = str(self.power_limit) + ' W'
         table['temperature:'] = str(self.temperature) + '°C'
         table['bat. voltage:'] = "%.1f V" % self.curr_voltage
+        table['bat. load_adj_voltage:'] = "%.1f V" % \
+            self.load_adjusted_curr_voltage
         table['bat. gma_voltage:'] = "%.1f V" % self.gma_voltage
         table['est. bat. capacity:']    = "%.1f Wh" % self.curr_capacity
         table['yield day:'] = "%s Wh" % self.yieldday
