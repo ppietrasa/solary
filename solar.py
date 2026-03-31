@@ -234,17 +234,18 @@ class InverterOnBattery(object):
         n_readings = list(reversed(self._voltage_queue))[:n]
         n_weights  =  list(([(k+1) for (k, v) in enumerate(n_readings)]))
         return gmean(n_readings, weights=n_weights)
- 
-    def n_readings_gma_voltage(self, n):
+
+    def n_readings_gma_load_adjusted_voltage(self, n):
         """Geometrical voltage mean over `n` observations"""
         import statistics, itertools
-        n_readings_iter = itertools.islice(reversed(self._voltage_queue), n)
+        n_readings_iter = itertools.islice(
+                reversed(self._load_adjusted_voltage_queue), n)
         return statistics.geometric_mean(n_readings_iter)
 
     @property
     def gma_voltage(self):
         """Geometrical voltage mean over as many observations as possible."""
-        return self.n_readings_gma_voltage(len(self._voltage_queue))
+        return self.n_readings_gma_load_adjusted_voltage(len(self._voltage_queue))
 
     @property
     def power(self):
@@ -726,7 +727,7 @@ class PowerOperator(mqtt.Client):
             low_voltage  = InverterOnBattery.WINTER_LOW_VOLTAGE
             high_voltage = InverterOnBattery.WINTER_HGH_VOLTAGE
 
-        curr_voltage_smoothed = inv.n_readings_gma_voltage(7)
+        curr_voltage_smoothed = inv.n_readings_gma_load_adjusted_voltage(7)
         target_power = self.last_output
 
         if self.curr_alg == PowerOperatorAlg.Off:
@@ -744,14 +745,7 @@ class PowerOperator(mqtt.Client):
         # inverter when the battery voltage gets too low. We protect the
         # inverter from overheating when its temperature gets too high.
         if inv.is_on:
-            # ~ 18.5% capacity (likely more because discharging)
-            if ( self.curr_alg == PowerOperatorAlg.FullPower
-                 and curr_voltage_smoothed < 23.4):
-                self.log("Battery low (%.2f V) while outputing at full-power,"
-                    " about to power off.." % curr_voltage_smoothed)
-                inv.power_off()
-                return
-            elif curr_voltage_smoothed < low_voltage:
+            if curr_voltage_smoothed < low_voltage:
                 self.log("Battery low (%.2f V), about to power off.."
                     % curr_voltage_smoothed)
                 inv.power_off()
