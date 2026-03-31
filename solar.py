@@ -380,6 +380,7 @@ class InverterOnBattery(object):
         table['status:'] = 'on' if self.is_on else 'OFF'
         table['reachable:'] = 'yes' if self.is_reachable else 'NO'
         table['feeding:'] = "%.1f W" % self.power
+        table['power_dc:'] = "%.1f W" % self.power_dc
         table['limit:'] = str(self.power_limit) + ' W'
         table['temperature:'] = str(self.temperature) + '°C'
         table['bat. voltage:'] = "%.1f V" % self.curr_voltage
