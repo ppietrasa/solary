@@ -316,17 +316,17 @@ class InverterOnBattery(object):
 
     @staticmethod
     def load_delta(load):
-        sorted_loads = sorted(LOAD_2_VOLTAGEDELTA.keys())
+        sorted_loads = sorted(InverterOnBattery.LOAD_2_VOLTAGEDELTA.keys())
 
         if load <= min(sorted_loads):
-            return LOAD_2_VOLTAGEDELTA[min(sorted_loads)]
+            return InverterOnBattery.LOAD_2_VOLTAGEDELTA[min(sorted_loads)]
         elif load >= max(sorted_loads):
-            return LOAD_2_VOLTAGEDELTA[max(sorted_loads)]
+            return InverterOnBattery.LOAD_2_VOLTAGEDELTA[max(sorted_loads)]
         else:
             for i in range(len(sorted_loads) - 1):
                 load1, load2 = sorted_loads[i], sorted_loads[i + 1]
-                delta1, delta2 = LOAD_2_VOLTAGEDELTA[voltage1], \
-                    LOAD_2_VOLTAGEDELTA[voltage2]
+                delta1, delta2 = InverterOnBattery.LOAD_2_VOLTAGEDELTA[load1], \
+                    InverterOnBattery.LOAD_2_VOLTAGEDELTA[load2]
 
                 if load1 <= load <= load2:
                     return InverterOnBattery.interpolate_linear(
