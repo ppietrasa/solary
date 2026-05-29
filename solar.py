@@ -268,8 +268,7 @@ class InverterOnBattery(object):
     @property
     def load_adjusted_curr_voltage(self):
         """Current voltage of the battery adjusted for the load."""
-        return self.curr_voltage \
-            + (InverterOnBattery.VOLTAGE_LOAD_CORRECTION_FACTOR * self.power_dc)
+        return self.curr_voltage + InverterOnBattery.load_delta(self.power_dc)
 
     def n_readings_iwma_voltage(self, n):
         """Inverse weight moving avarage of voltage over `n` observations"""
