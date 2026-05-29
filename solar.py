@@ -103,6 +103,62 @@ class InverterOnBattery(object):
 
     VOLTAGE_LOAD_CORRECTION_FACTOR = 0.00377
 
+    # these have been derived experimentally in the
+    # night, when sun was not interfering
+    LOAD_2_VOLTAGEDELTA = {
+            0   : 0,
+            1   : 0.01,
+            8.6 : 0.01,
+
+            17.9 : 0.09,
+            19.3 : 0.09,
+
+            23.7 : 0.09,
+            30.4 : 0.09,
+            35   : 0.09,
+            36.2 : 0.09,
+
+            52.5 : 0.19,
+            54.1 : 0.19,
+
+            65.3 : 0.29,
+            65.4 : 0.29,
+
+            84.6 : 0.29,
+            86.1 : 0.29,
+
+            95.8 : 0.39,
+            97.4 : 0.39,
+
+            107   : 0.49,
+            116.6 : 0.49
+
+            128.3 : 0.58,
+            127.8 : 0.58,
+            139   : 0.58,
+
+            150.3 : 0.68,
+
+            171.1 : 0.78,
+            187.0 : 0.78,
+            193.4 : 0.78,
+
+            203.1 : 0.95,
+            213   : 0.95,
+            224   : 0.95,
+
+            230.6 : 1.03,
+
+            242   : 1.51,
+            256   : 1.51,
+            257.2 : 1.51,
+            257.3 : 1.51,
+            257.7 : 1.51,
+
+            # maxx
+            311 : 2.07,
+        }
+
 
     def __init__(self, serial, bat_capacity=2560, base_topic='solar/'):
         """
@@ -258,6 +314,25 @@ class InverterOnBattery(object):
     @staticmethod
     def interpolate_linear(x, x0, y0, x1, y1):
         return y0 + (x - x0) * (y1 - y0) / (x1 - x0)
+
+    @staticmethod
+    def load_delta(load):
+        sorted_loads = sorted(LOAD_2_VOLTAGEDELTA.keys())
+
+        if load <= min(sorted_loads):
+            return LOAD_2_VOLTAGEDELTA[min(sorted_loads)]
+        elif load >= max(sorted_loads):
+            return LOAD_2_VOLTAGEDELTA[max(sorted_loads)]
+        else:
+            for i in range(len(sorted_loads) - 1):
+                load1, load2 = sorted_loads[i], sorted_loads[i + 1]
+                delta1, delta2 = LOAD_2_VOLTAGEDELTA[voltage1], \
+                    LOAD_2_VOLTAGEDELTA[voltage2]
+
+                if load1 <= load <= load2:
+                    return InverterOnBattery.interpolate_linear(
+                            load, load1, delta1, load2, delta2)
+        assert False, "Unreachable code!"
 
     @staticmethod
     def voltage_to_capacity(voltage, capacity_map):
