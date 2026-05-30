@@ -101,7 +101,7 @@ class InverterOnBattery(object):
     FLOAT_VOLTAGE = 27.2
     HGH_TEMPERATURE = 75
 
-    VOLTAGE_LOAD_CORRECTION_FACTOR = 0.00377
+    VOLTAGE_LOAD_CORRECTION_FACTOR = 0.0087
 
     # these have been derived experimentally in the
     # night, when sun was not interfering
