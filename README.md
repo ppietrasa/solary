@@ -48,17 +48,32 @@ general-purpose solar controller.
 
 ### Voltage-based control
 
-The voltage-based modes use two moving averages of battery voltage:
+The "Limit by sun" modes use 2 moving averages of battery voltage:
 
-- A short-term average over 7 readings, which smooths brief fluctuations, such
+- A short-term average (7 readings), which smooths brief fluctuations, such
   as those caused by leaf or cloud shadows passing over the panels.
-- A long-term average over 500 readings, which represents the prevailing
+- A long-term average (500 readings), which represents the prevailing
   voltage trend under recent solar conditions.
 
-The controller adjusts HM300 output to bring the short-term average toward the
-long-term average. The aim is to keep battery voltage relatively stable. This
-uses voltage behavior as an indirect signal of the balance between solar input
-and system output; it is not a direct measurement of available solar power.
+The system adjusts the HM300 output to align the short-term average with the
+long-term one, and by this maintains a stable battery voltage. This uses voltage
+behavior as an indirect indicator of the balance between solar input and system
+output, rather than a direct measurement of current solar input power.
+
+These adjustments are made using a variable `step_size`. This value is
+dynamically scaled - multiplied or divided by specific factors - depending on
+whether the target is approached from above or below, and whether the previous
+adjustment resulted in an overshoot or an undershoot.
+
+This is a common-sense approach, more straightforward than dealing with the
+hassle of extracting measurements from the load controller, or using a PID
+controller. While a PID controller worked reasonably well, it was prone to
+occasional oscillations which I found difficult to tune away reliably.
+
+The overall effect is that the HM300’s output power either tracks or is limited
+by the power supplied by the charge controller. This reduces reliance on the
+battery, minimizes discharge cycles and hopefully helps to prolong the
+battery's overall lifespan.
 
 ## Repository contents
 
@@ -109,7 +124,7 @@ sudo systemctl start solary.service
 The system can also be started manually:
 
 ```bash
-/usr/bin/python3 /home/piotr/solary/solar.py --verbose
+/usr/bin/python3 ./solar.py --verbose
 ```
 
 ## Logs and current state
