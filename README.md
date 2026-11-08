@@ -31,6 +31,7 @@ general-purpose solar controller.
   - Between the charge controller and battery
   - Between the battery and Smart BatteryProtect
   - Between the Smart BatteryProtect and HM300
+- Circuit breaker between the panels and the charge controller
 
 ## Control modes
 
