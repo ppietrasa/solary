@@ -566,7 +566,7 @@ class PowerOperator(mqtt.Client):
 
         self.last_output = self.inverter.power_limit
         self.last_action = PowerAction.NONE
-        self.tune_unit   = 19
+        self.step_size   = 19
 
         self.last_min_feed = 10
         self.last_max_feed = self.inverter.max_power
@@ -903,47 +903,47 @@ class PowerOperator(mqtt.Client):
             if inv.curr_voltage > target_voltage:
                 if self.last_action == PowerAction.DOWN:
                     # overshoot from below
-                    self.tune_unit = max(2, int(round(self.tune_unit / 1.5)))
+                    self.step_size = max(2, int(round(self.step_size / 1.5)))
                 elif self.last_action == PowerAction.UP:
                     # undershoot from above
-                    self.tune_unit = min(40, int(round(self.tune_unit * 1.75)))
+                    self.step_size = min(40, int(round(self.step_size * 1.75)))
                 self.last_action = PowerAction.UP
-                target_power = min(inv.power_limit + self.tune_unit,
+                target_power = min(inv.power_limit + self.step_size,
                         max_feed)
                 log.info("target_power = min(%s + %s, %s)" %
-                        (inv.power_limit, self.tune_unit, max_feed))
+                        (inv.power_limit, self.step_size, max_feed))
 
             elif inv.curr_voltage < target_voltage:
                 if self.last_action == PowerAction.UP:
                     # undershoot from above
-                    self.tune_unit = max(2, int(round(self.tune_unit / 2.25)))
+                    self.step_size = max(2, int(round(self.step_size / 2.25)))
                 elif self.last_action == PowerAction.DOWN:
                     # overshoot from below
-                    self.tune_unit = min(40, int(round(self.tune_unit * 1.25)))
+                    self.step_size = min(40, int(round(self.step_size * 1.25)))
                 self.last_action = PowerAction.DOWN
-                target_power = max(inv.power_limit - self.tune_unit,
+                target_power = max(inv.power_limit - self.step_size,
                         min_feed)
                 log.info("target_power = max(%s - %s, %s)" %
-                        (inv.power_limit, self.tune_unit, min_feed))
+                        (inv.power_limit, self.step_size, min_feed))
 
             else:
                 self.last_action = PowerAction.NONE
                 # reset tune unit, good or bad idea?? hmm...
-                # self.tune_unit = 19
+                # self.step_size = 19
 
 
             target_power = max(min(target_power, max_feed), min_feed)
 
-            assert(self.tune_unit >= 0)
+            assert(self.step_size >= 0)
             assert(target_power >= min_feed)
             assert(target_power <= max_feed)
 
             log.info("target_power : %s" % target_power)
-            log.info("tune_unit    : %s" % self.tune_unit)
+            log.info("step_size    : %s" % self.step_size)
             target_power = int(round(target_power))
             log.info("cl_csv: %.1f, %.1f, %d, %d, %d, %d, %d" % (
                 target_voltage, inv.curr_voltage, target_power,
-                inv.power_limit, min_feed, max_feed, self.tune_unit))
+                inv.power_limit, min_feed, max_feed, self.step_size))
             self.set_power(target_power)
 
 
